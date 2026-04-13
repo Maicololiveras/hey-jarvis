@@ -20,19 +20,23 @@ class EngramBridge:
         log.info("[EngramBridge] enabled=%s, auto_save=%s, context_on_query=%s",
                  self._enabled, self._auto_save, self._context_on_query)
 
-    def enrich_prompt(self, user_query: str) -> str:
+    def enrich_prompt(self, user_query: str, language: str = "es") -> str:
         """Wrap user query with Engram context-search instructions.
 
         Returns the enriched prompt string. If engram is disabled,
         returns the original query unchanged.
         """
+        lang_name = "Spanish" if language == "es" else f"the detected language ({language})"
+        lang_line = f"IMPORTANT: You MUST respond in {lang_name}.\n\n"
+
         if not self._enabled or not self._context_on_query:
-            return user_query
+            return f"{lang_line}User question: {user_query}"
 
         # Extract keywords for search (simple: take words > 3 chars)
         keywords = " ".join(w for w in user_query.split() if len(w) > 3)[:100]
 
         return (
+            f"{lang_line}"
             "BEFORE answering, search Engram for relevant context:\n"
             "1. Call mem_context(limit: 10) for recent session history\n"
             f'2. Call mem_search(query: "{keywords}") for related past work\n'

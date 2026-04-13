@@ -142,8 +142,13 @@ class JarvisDaemon:
         )
         self.state.activate()
         self.ui.send_command(UICommand("show"))
+        self.ui.send_command(UICommand("set_state", "speaking"))
+        duration = tts_module.speak("Si, te escucho", "es")
+        # Short mute to avoid echo, but don't over-mute — user needs to talk right after
+        self.audio.set_mute_window(duration + 0.3)
         self.ui.send_command(UICommand("set_state", "listening"))
-        self.audio.set_mute_window(tts_module.speak("Si, te escucho", "es") + 1.0)
+        # Reset audio activity timer so silence timeout starts AFTER greeting
+        self.state.record_audio_activity()
 
     def _handle_segment(self, event: SegmentEvent) -> None:
         """Handle a speech segment: STT → enrich → route → TTS.
@@ -190,7 +195,7 @@ class JarvisDaemon:
             )
 
         # 3. Enrich with Engram context ─────────────────────────────────
-        enriched_prompt = self.engram.enrich_prompt(text)
+        enriched_prompt = self.engram.enrich_prompt(text, language=language or "es")
 
         # 3. Query backend ──────────────────────────────────────────────
         result = self.router.query(enriched_prompt)

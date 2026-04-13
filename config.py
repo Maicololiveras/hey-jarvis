@@ -23,7 +23,7 @@ Format (version 2):
     stt:
       engine: "faster-whisper"
       model_path: "D:/Transcripcion con ia/whisper_models/medium"
-      fast_model_path: "D:/Transcripcion con ia/whisper_models/tiny"
+      fast_model_path: "D:/Transcripcion con ia/whisper_models/base"
       use_precise_pass: false
       device: "cpu"
       compute_type: "int8"
@@ -110,7 +110,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "stt": {
         "engine": "faster-whisper",
         "model_path": "D:/Transcripcion con ia/whisper_models/medium",
-        "fast_model_path": "D:/Transcripcion con ia/whisper_models/tiny",
+        "fast_model_path": "D:/Transcripcion con ia/whisper_models/base",
         "use_precise_pass": False,
         "device": "cpu",
         "compute_type": "int8",
