@@ -135,6 +135,7 @@ class JarvisDaemon:
             event.score,
         )
         self.state.activate()
+        self.audio.set_mute_window(tts_module.speak("Si, te escucho", "es") + 1.0)
         self.ui.send_command(UICommand("show"))
         self.ui.send_command(UICommand("set_state", "listening"))
 

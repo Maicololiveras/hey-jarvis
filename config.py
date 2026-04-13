@@ -73,6 +73,7 @@ Format (version 2):
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +83,7 @@ import yaml
 CONFIG_DIR = Path.home() / ".claudio"
 CONFIG_FILE = "config.yaml"
 CONFIG_PATH = CONFIG_DIR / CONFIG_FILE
+EXAMPLE_CONFIG_PATH = Path(__file__).with_name("config.yaml.example")
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -165,6 +167,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 def load() -> dict[str, Any]:
     """Load config from ~/.claudio/config.yaml, or return defaults."""
+    if not CONFIG_PATH.exists():
+        if EXAMPLE_CONFIG_PATH.exists():
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(EXAMPLE_CONFIG_PATH, CONFIG_PATH)
+        else:
+            return DEFAULT_CONFIG.copy()
+
     if not CONFIG_PATH.exists():
         return DEFAULT_CONFIG.copy()
     with CONFIG_PATH.open("r", encoding="utf-8") as fh:
