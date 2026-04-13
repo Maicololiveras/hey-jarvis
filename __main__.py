@@ -42,7 +42,7 @@ def _start_daemon(ui: JarvisUI) -> None:
 
 
 def main() -> int:
-    setup_logging()
+    setup_logging(level="DEBUG")
     log.info("[Jarvis] ===== Hey Jarvis starting =====")
 
     try:

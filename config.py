@@ -14,15 +14,17 @@ Format (version 2):
       channels: 1
       chunk_duration_ms: 80
       device_override: null
-      pre_gain: 2.0
+      pre_gain: 5.0
       highpass_cutoff_hz: 80
       agc_target_peak: 0.9
-      agc_max_gain: 10.0
-      agc_min_peak: 0.01
+      agc_max_gain: 20.0
+      agc_min_peak: 0.005
 
     stt:
       engine: "faster-whisper"
       model_path: "D:/Transcripcion con ia/whisper_models/medium"
+      fast_model_path: "D:/Transcripcion con ia/whisper_models/tiny"
+      use_precise_pass: false
       device: "cpu"
       compute_type: "int8"
 
@@ -66,7 +68,7 @@ Format (version 2):
       engine: "openwakeword"
       model: "hey_jarvis"
       threshold: 0.04
-      consecutive_frames: 6
+      consecutive_frames: 2
       extra_gain: 2.0
 """
 
@@ -99,16 +101,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "channels": 1,
         "chunk_duration_ms": 80,
         "device_override": None,
-        "pre_gain": 2.0,
+        "pre_gain": 5.0,
         "highpass_cutoff_hz": 80,
         "agc_target_peak": 0.9,
-        "agc_max_gain": 10.0,
-        "agc_min_peak": 0.01,
+        "agc_max_gain": 20.0,
+        "agc_min_peak": 0.005,
     },
     "stt": {
         "engine": "faster-whisper",
         "model_path": "D:/Transcripcion con ia/whisper_models/medium",
-        "fast_model_path": "D:/Transcripcion con ia/whisper_models/base",
+        "fast_model_path": "D:/Transcripcion con ia/whisper_models/tiny",
+        "use_precise_pass": False,
         "device": "cpu",
         "compute_type": "int8",
     },
@@ -156,7 +159,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "engine": "openwakeword",
         "model": "hey_jarvis",
         "threshold": 0.04,
-        "consecutive_frames": 6,
+        "consecutive_frames": 2,
         "extra_gain": 2.0,
     },
 }

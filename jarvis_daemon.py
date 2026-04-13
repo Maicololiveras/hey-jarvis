@@ -47,6 +47,7 @@ class JarvisDaemon:
 
         cfg = config.load()
         jarvis_cfg: dict[str, Any] = cfg.get("jarvis", {})
+        stt_cfg = config.get_stt_config()
 
         # ── Module initialization ──────────────────────────────────────
         self.state = StateMachine(
@@ -57,16 +58,16 @@ class JarvisDaemon:
             config.get_wake_word_config(),
         )
 
-        stt_cfg = config.get_stt_config()
         self.stt = STT(
             model_path=stt_cfg.get("model_path", ""),
             device=stt_cfg.get("device", "cpu"),
             compute_type=stt_cfg.get("compute_type", "int8"),
             fast_model_path=stt_cfg.get("fast_model_path", ""),
         )
-        # Pre-load BOTH Whisper models at startup (base + medium)
-        # so there's zero latency on first transcription
-        self.stt.preload()
+        self._use_precise_stt = bool(stt_cfg.get("use_precise_pass", False))
+        # Pre-load only the models we will actually use to avoid paying
+        # startup and runtime cost for an unused precise pass.
+        self.stt.preload(fast=True, precise=self._use_precise_stt)
 
         self.router = QueryRouter(config.get_query_config())
         self.engram = EngramBridge(
@@ -140,9 +141,9 @@ class JarvisDaemon:
             event.score,
         )
         self.state.activate()
-        self.audio.set_mute_window(tts_module.speak("Si, te escucho", "es") + 1.0)
         self.ui.send_command(UICommand("show"))
         self.ui.send_command(UICommand("set_state", "listening"))
+        self.audio.set_mute_window(tts_module.speak("Si, te escucho", "es") + 1.0)
 
     def _handle_segment(self, event: SegmentEvent) -> None:
         """Handle a speech segment: STT → enrich → route → TTS.
@@ -173,17 +174,20 @@ class JarvisDaemon:
             fast_text[:100],
         )
 
-        # 2. Precise transcribe (medium model) — for the AI backend ────
-        text, language = self.stt.transcribe(event.audio, fast=False)
+        text = fast_text
+        if self._use_precise_stt:
+            # The precise pass improves accuracy, but it adds noticeable
+            # latency. Keep it opt-in for production responsiveness.
+            text, language = self.stt.transcribe(event.audio, fast=False)
 
-        if not text or not text.strip():
-            text = fast_text  # fallback to fast if medium returns empty
+            if not text or not text.strip():
+                text = fast_text  # fallback to fast if medium returns empty
 
-        log.info(
-            "[JarvisDaemon] Precise transcribe (%s): %s",
-            language,
-            text[:100],
-        )
+            log.info(
+                "[JarvisDaemon] Precise transcribe (%s): %s",
+                language,
+                text[:100],
+            )
 
         # 3. Enrich with Engram context ─────────────────────────────────
         enriched_prompt = self.engram.enrich_prompt(text)

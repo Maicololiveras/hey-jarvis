@@ -7,13 +7,25 @@ LOG_DIR = Path(__file__).parent
 LOG_FILE = LOG_DIR / "jarvis.log"
 LOG_FILE_PREV = LOG_DIR / "jarvis.log.1"
 
+_initialized = False
+
+
 def setup_logging(level: str = "INFO") -> None:
     """Configure logging to file with rotation on restart."""
-    # Rotate previous log
-    if LOG_FILE.exists():
-        if LOG_FILE_PREV.exists():
-            LOG_FILE_PREV.unlink()
-        LOG_FILE.rename(LOG_FILE_PREV)
+    global _initialized
+    if _initialized:
+        return
+    _initialized = True
+
+    # Rotate previous log (best-effort — skip if locked)
+    try:
+        if LOG_FILE.exists():
+            if LOG_FILE_PREV.exists():
+                LOG_FILE_PREV.unlink()
+            LOG_FILE.rename(LOG_FILE_PREV)
+    except (PermissionError, OSError):
+        # Log file locked by another process — just append
+        pass
 
     # Force UTF-8 on Windows
     if sys.platform == "win32":

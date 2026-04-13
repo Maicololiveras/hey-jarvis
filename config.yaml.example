@@ -22,11 +22,11 @@ audio:
   channels: 1                      # Mono audio
   chunk_duration_ms: 80            # Audio chunk size in milliseconds
   device_override: null             # null = auto-detect; set index to force device
-  pre_gain: 2.0                    # Pre-amplification gain factor
-  highpass_cutoff_hz: 200          # High-pass filter cutoff to remove low rumble
+  pre_gain: 5.0                    # Fixed mic gain boost before VAD / wake word
+  highpass_cutoff_hz: 80          # High-pass filter cutoff to remove low rumble
   agc_target_peak: 0.9            # Automatic Gain Control target peak level
-  agc_max_gain: 10.0              # AGC maximum gain multiplier
-  agc_min_peak: 0.01              # AGC minimum peak threshold (below = silence)
+  agc_max_gain: 20.0              # AGC maximum gain multiplier
+  agc_min_peak: 0.005             # AGC minimum peak threshold (below = silence)
 
 # ---------------------------------------------------------------------------
 # Speech-to-Text
@@ -34,6 +34,8 @@ audio:
 stt:
   engine: "faster-whisper"         # STT engine (only faster-whisper supported)
   model_path: "D:/Transcripcion con ia/whisper_models/medium"  # Path to Whisper model
+  fast_model_path: "D:/Transcripcion con ia/whisper_models/tiny"  # Fast wake/command model
+  use_precise_pass: false          # true = run a second medium pass before querying AI
   device: "cpu"                    # "cpu" | "cuda"
   compute_type: "int8"            # "int8" | "float16" | "float32"
 
@@ -94,6 +96,6 @@ engram:
 wake_word:
   engine: "openwakeword"           # Wake word engine
   model: "hey_jarvis"             # Model identifier
-  threshold: 0.45                  # Detection confidence threshold (0.0-1.0)
-  consecutive_frames: 4            # Required consecutive frames above threshold
+  threshold: 0.04                  # Detection confidence threshold (0.0-1.0)
+  consecutive_frames: 2            # Required consecutive frames above threshold
   extra_gain: 2.0                 # Additional gain for wake word audio stream

@@ -455,7 +455,8 @@ if HAS_PYQT6:
                 app = QApplication(sys.argv)
 
             ui = JarvisUI()
-            ui.show_ui()
+            # Start hidden — daemon sends UICommand("show") on wake word
+            ui.hide()
 
             if on_ready is not None:
                 on_ready(ui)

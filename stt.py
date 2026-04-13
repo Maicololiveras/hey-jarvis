@@ -77,12 +77,12 @@ class STT:
         compute_type: str = "int8",
         fast_model_path: str = "",
     ) -> None:
-        self._model_path = model_path          # precise (medium)
+        self._model_path = model_path  # precise (medium)
         self._fast_model_path = fast_model_path  # fast (base/tiny)
         self._device = device
         self._compute_type = compute_type
-        self._model = None          # precise model — lazy-loaded
-        self._fast_model = None     # fast model — lazy-loaded
+        self._model = None  # precise model — lazy-loaded
+        self._fast_model = None  # fast model — lazy-loaded
 
     # ------------------------------------------------------------------
     # Public API
@@ -154,7 +154,9 @@ class STT:
             # --- hallucination filtering ---
             text = self._filter(text, strict=strict, elapsed=elapsed)
             if text:
-                log.info("Transcription (%.2fs, lang=%s): '%s'", elapsed, detected_lang, text)
+                log.info(
+                    "Transcription (%.2fs, lang=%s): '%s'", elapsed, detected_lang, text
+                )
 
             return text.strip(), detected_lang
         finally:
@@ -230,11 +232,12 @@ class STT:
         log.info("Whisper model loaded.")
         return self._model
 
-    def preload(self) -> None:
-        """Pre-load both Whisper models at startup."""
-        if self._fast_model_path:
+    def preload(self, *, fast: bool = True, precise: bool = True) -> None:
+        """Pre-load the Whisper models that will actually be used."""
+        if fast and self._fast_model_path:
             self._ensure_fast_model()
-        self._ensure_model()
+        if precise:
+            self._ensure_model()
 
     def _ensure_fast_model(self):
         """Load the fast (base) Whisper model on first use."""
