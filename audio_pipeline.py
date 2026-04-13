@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 _DEFAULTS: dict[str, Any] = {
     "sample_rate": 16000,
     "pre_gain": 2.0,
-    "highpass_cutoff_hz": 200,
+    "highpass_cutoff_hz": 80,
     "agc_target_peak": 0.9,
     "agc_max_gain": 10.0,
     "agc_min_peak": 0.01,
@@ -38,8 +38,8 @@ _DEFAULTS: dict[str, Any] = {
 
 # Host-API preference order for Windows audio device selection.
 AUDIO_DEVICE_API_PRIORITY: tuple[str, ...] = (
-    "DirectSound",
     "MME",
+    "DirectSound",
     "WDM-KS",
     "WASAPI",
 )
@@ -164,7 +164,9 @@ def preprocess_chunk(chunk: np.ndarray, audio_cfg: dict[str, Any]) -> np.ndarray
     np.ndarray:
         Preprocessed float32 samples clipped to [-1, 1].
     """
-    cutoff_hz: float = audio_cfg.get("highpass_cutoff_hz", _DEFAULTS["highpass_cutoff_hz"])
+    cutoff_hz: float = audio_cfg.get(
+        "highpass_cutoff_hz", _DEFAULTS["highpass_cutoff_hz"]
+    )
     sample_rate: int = audio_cfg.get("sample_rate", _DEFAULTS["sample_rate"])
     pre_gain: float = audio_cfg.get("pre_gain", _DEFAULTS["pre_gain"])
 
@@ -206,7 +208,9 @@ def preprocess_segment(
 
     peak = float(np.max(np.abs(segment)))
     if peak < agc_min_peak:
-        logger.debug("Segment peak %.5f below floor %.5f — skipping AGC", peak, agc_min_peak)
+        logger.debug(
+            "Segment peak %.5f below floor %.5f — skipping AGC", peak, agc_min_peak
+        )
         return segment
 
     gain = agc_target / peak
@@ -293,7 +297,9 @@ def select_audio_device(
 
         # If the only match for this API was a generic alias, use it as fallback.
         if generic_match is not None:
-            logger.info("Auto-selected audio device (generic alias): %s", generic_match[1])
+            logger.info(
+                "Auto-selected audio device (generic alias): %s", generic_match[1]
+            )
             return generic_match
 
     # --- Fallback: system default ---
@@ -371,6 +377,8 @@ class AudioPipeline:
         self._wake_cfg = wake_cfg
         self._sample_rate: int = audio_cfg.get("sample_rate", _DEFAULTS["sample_rate"])
         self._closed = False
+        self._last_audio_frame_at: float = 0.0
+        self._recent_rms_peak: float = 0.0
 
         # Mute window — suppresses processing after TTS playback.
         self._mute_until: float = 0.0
@@ -389,7 +397,11 @@ class AudioPipeline:
 
         # ── Load openWakeWord ──
         self._ow_model: OpenWakeWordModel | None = None
-        if wake_cfg.get("engine", "openwakeword") == "openwakeword" and _OPENWAKEWORD_AVAILABLE:
+        self._ow_model_key: str | None = None
+        if (
+            wake_cfg.get("engine", "openwakeword") == "openwakeword"
+            and _OPENWAKEWORD_AVAILABLE
+        ):
             model_name = wake_cfg.get("model", "hey_jarvis")
             try:
                 logger.info("Loading openWakeWord model '%s'…", model_name)
@@ -397,9 +409,20 @@ class AudioPipeline:
                     wakeword_models=[model_name],
                     inference_framework="onnx",
                 )
-                logger.info("openWakeWord loaded. Wake word: '%s'", model_name)
+                loaded_models = getattr(self._ow_model, "models", {})
+                if isinstance(loaded_models, dict) and loaded_models:
+                    self._ow_model_key = str(next(iter(loaded_models.keys())))
+                else:
+                    self._ow_model_key = str(model_name)
+                logger.info(
+                    "openWakeWord loaded. Configured model='%s', score key='%s'",
+                    model_name,
+                    self._ow_model_key,
+                )
             except Exception as exc:
-                logger.warning("Failed to load openWakeWord: %s — wake word disabled", exc)
+                logger.warning(
+                    "Failed to load openWakeWord: %s — wake word disabled", exc
+                )
         elif not _OPENWAKEWORD_AVAILABLE:
             logger.warning("openwakeword package not installed — wake word disabled")
 
@@ -419,6 +442,12 @@ class AudioPipeline:
             logger.debug("Audio callback status: %s", status)
         try:
             self._queue.put_nowait(indata.copy())
+            self._last_audio_frame_at = time.time()
+            samples = indata.flatten().astype(np.float32)
+            if samples.size:
+                rms = float(np.sqrt(np.mean(samples * samples)))
+                if rms > self._recent_rms_peak:
+                    self._recent_rms_peak = rms
         except queue.Full:
             pass  # Drop frames if processing is falling behind.
 
@@ -440,7 +469,9 @@ class AudioPipeline:
         ow_threshold: float = self._wake_cfg.get("threshold", 0.45)
         ow_consecutive_required: int = self._wake_cfg.get("consecutive_frames", 4)
         ow_extra_gain: float = self._wake_cfg.get("extra_gain", 2.0)
-        ow_wake_word: str = self._wake_cfg.get("model", "hey_jarvis")
+        ow_wake_word: str = self._ow_model_key or str(
+            self._wake_cfg.get("model", "hey_jarvis")
+        )
         vad_threshold: float = self._audio_cfg.get(
             "vad_threshold", _VAD_DEFAULTS["vad_threshold"]
         )
@@ -471,9 +502,14 @@ class AudioPipeline:
         ow_buffer = np.empty(0, dtype=np.float32)
         ow_consecutive_hits = 0
         ow_cooldown_until = 0.0  # avoid double-firing wake word
+        ow_debug_last_log = 0.0
+        no_audio_last_log = 0.0
+        ow_debug_max_score = 0.0
 
         # Reset highpass filter state for a clean start.
         reset_highpass()
+        self._last_audio_frame_at = 0.0
+        self._recent_rms_peak = 0.0
 
         # Drain stale audio from previous runs.
         while not self._queue.empty():
@@ -500,6 +536,19 @@ class AudioPipeline:
                 try:
                     chunk = self._queue.get(timeout=0.5)
                 except queue.Empty:
+                    now = time.time()
+                    if (
+                        self._last_audio_frame_at > 0
+                        and (now - self._last_audio_frame_at) >= 5.0
+                    ):
+                        if (now - no_audio_last_log) >= 5.0:
+                            logger.warning(
+                                "No audio frames for %.1fs (device=%s, index=%s)",
+                                now - self._last_audio_frame_at,
+                                device_name,
+                                device_index,
+                            )
+                            no_audio_last_log = now
                     continue
 
                 # ── Mute window — skip processing after TTS ──
@@ -507,6 +556,9 @@ class AudioPipeline:
                     continue
 
                 samples = chunk.flatten().astype(np.float32)
+                rms = float(np.sqrt(np.mean(samples**2)))
+                if rms > 0.01:
+                    logger.debug("Audio chunk: rms=%.4f, len=%d", rms, len(samples))
 
                 # Chunk-level preprocessing: highpass + pre-gain.
                 samples = preprocess_chunk(samples, self._audio_cfg)
@@ -531,12 +583,33 @@ class AudioPipeline:
                         try:
                             # Extra gain dedicated to openWakeWord (on top
                             # of the global preprocess_chunk pre-gain).
-                            frame_boosted = np.clip(
-                                frame * ow_extra_gain, -1.0, 1.0
-                            )
+                            frame_boosted = np.clip(frame * ow_extra_gain, -1.0, 1.0)
                             frame_int16 = (frame_boosted * 32767).astype(np.int16)
                             predictions = self._ow_model.predict(frame_int16)
                             score = float(predictions.get(ow_wake_word, 0.0))
+
+                            if score > ow_debug_max_score:
+                                ow_debug_max_score = score
+                            now_dbg = time.time()
+                            if now_dbg - ow_debug_last_log > 3.0:
+                                logger.debug(
+                                    "OW rolling stats: score_peak=%.4f rms_peak_raw=%.4f key=%s",
+                                    ow_debug_max_score,
+                                    self._recent_rms_peak,
+                                    ow_wake_word,
+                                )
+                                ow_debug_max_score = 0.0
+                                self._recent_rms_peak = 0.0
+                                ow_debug_last_log = now_dbg
+
+                            if score > 0.05:  # Log any non-trivial score
+                                logger.debug(
+                                    "OW score: %.4f (threshold=%.2f, consecutive=%d/%d)",
+                                    score,
+                                    ow_threshold,
+                                    ow_consecutive_hits,
+                                    ow_consecutive_required,
+                                )
 
                             if score > ow_threshold:
                                 ow_consecutive_hits += 1
