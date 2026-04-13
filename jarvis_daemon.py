@@ -62,8 +62,10 @@ class JarvisDaemon:
             model_path=stt_cfg.get("model_path", ""),
             device=stt_cfg.get("device", "cpu"),
             compute_type=stt_cfg.get("compute_type", "int8"),
+            fast_model_path=stt_cfg.get("fast_model_path", ""),
         )
-        # Pre-load Whisper model at startup so first transcription is fast
+        # Pre-load BOTH Whisper models at startup (base + medium)
+        # so there's zero latency on first transcription
         self.stt.preload()
 
         self.router = QueryRouter(config.get_query_config())
@@ -156,22 +158,34 @@ class JarvisDaemon:
         # Send segment audio as final waveform burst before processing
         self.ui.send_command(UICommand("update_waveform", event.audio))
 
-        # 1. Transcribe ─────────────────────────────────────────────────
+        # 1. Fast transcribe (base model) — quick check ────────────────
         self.ui.send_command(UICommand("set_state", "processing"))
-        text, language = self.stt.transcribe(event.audio)
+        fast_text, language = self.stt.transcribe(event.audio, fast=True)
 
-        if not text or not text.strip():
-            log.debug("[JarvisDaemon] Empty transcription, ignoring")
+        if not fast_text or not fast_text.strip():
+            log.debug("[JarvisDaemon] Empty transcription (fast), ignoring")
             self.ui.send_command(UICommand("set_state", "listening"))
             return
 
         log.info(
-            "[JarvisDaemon] Transcribed (%s): %s",
+            "[JarvisDaemon] Fast transcribe (%s): %s",
+            language,
+            fast_text[:100],
+        )
+
+        # 2. Precise transcribe (medium model) — for the AI backend ────
+        text, language = self.stt.transcribe(event.audio, fast=False)
+
+        if not text or not text.strip():
+            text = fast_text  # fallback to fast if medium returns empty
+
+        log.info(
+            "[JarvisDaemon] Precise transcribe (%s): %s",
             language,
             text[:100],
         )
 
-        # 2. Enrich with Engram context ─────────────────────────────────
+        # 3. Enrich with Engram context ─────────────────────────────────
         enriched_prompt = self.engram.enrich_prompt(text)
 
         # 3. Query backend ──────────────────────────────────────────────

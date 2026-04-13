@@ -75,11 +75,14 @@ class STT:
         model_path: str,
         device: str = "cpu",
         compute_type: str = "int8",
+        fast_model_path: str = "",
     ) -> None:
-        self._model_path = model_path
+        self._model_path = model_path          # precise (medium)
+        self._fast_model_path = fast_model_path  # fast (base/tiny)
         self._device = device
         self._compute_type = compute_type
-        self._model = None  # lazy-loaded
+        self._model = None          # precise model — lazy-loaded
+        self._fast_model = None     # fast model — lazy-loaded
 
     # ------------------------------------------------------------------
     # Public API
@@ -89,6 +92,7 @@ class STT:
         self,
         audio: np.ndarray,
         strict: bool = True,
+        fast: bool = False,
     ) -> tuple[str, str]:
         """Transcribe *audio* to text.
 
@@ -102,6 +106,10 @@ class STT:
             When ``False``, only the most obvious canned hallucinations
             are discarded — suitable for menu / conversation states where
             short or uncertain utterances still matter.
+        fast:
+            When ``True``, use the fast model (base) for quick transcription.
+            When ``False`` (default), use the precise model (medium) for
+            accurate transcription that goes to the AI backend.
 
         Returns
         -------
@@ -111,7 +119,10 @@ class STT:
             ``detected_language_code`` is the ISO-639-1 code Whisper
             inferred (e.g. ``"es"``, ``"en"``).
         """
-        model = self._ensure_model()
+        if fast and self._fast_model_path:
+            model = self._ensure_fast_model()
+        else:
+            model = self._ensure_model()
 
         # --- write a temporary WAV (faster-whisper expects a file path) ---
         tmp = tempfile.mktemp(suffix=".wav")
@@ -220,5 +231,28 @@ class STT:
         return self._model
 
     def preload(self) -> None:
-        """Pre-load the Whisper model so first transcription is fast."""
+        """Pre-load both Whisper models at startup."""
+        if self._fast_model_path:
+            self._ensure_fast_model()
         self._ensure_model()
+
+    def _ensure_fast_model(self):
+        """Load the fast (base) Whisper model on first use."""
+        if self._fast_model is not None:
+            return self._fast_model
+
+        from faster_whisper import WhisperModel
+
+        log.info(
+            "Loading FAST Whisper model from '%s' (device=%s, compute=%s) ...",
+            self._fast_model_path,
+            self._device,
+            self._compute_type,
+        )
+        self._fast_model = WhisperModel(
+            self._fast_model_path,
+            device=self._device,
+            compute_type=self._compute_type,
+        )
+        log.info("Fast Whisper model loaded.")
+        return self._fast_model

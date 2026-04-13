@@ -15,7 +15,7 @@ Format (version 2):
       chunk_duration_ms: 80
       device_override: null
       pre_gain: 2.0
-      highpass_cutoff_hz: 200
+      highpass_cutoff_hz: 80
       agc_target_peak: 0.9
       agc_max_gain: 10.0
       agc_min_peak: 0.01
@@ -65,8 +65,8 @@ Format (version 2):
     wake_word:
       engine: "openwakeword"
       model: "hey_jarvis"
-      threshold: 0.45
-      consecutive_frames: 4
+      threshold: 0.04
+      consecutive_frames: 6
       extra_gain: 2.0
 """
 
@@ -100,7 +100,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "chunk_duration_ms": 80,
         "device_override": None,
         "pre_gain": 2.0,
-        "highpass_cutoff_hz": 200,
+        "highpass_cutoff_hz": 80,
         "agc_target_peak": 0.9,
         "agc_max_gain": 10.0,
         "agc_min_peak": 0.01,
@@ -108,6 +108,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "stt": {
         "engine": "faster-whisper",
         "model_path": "D:/Transcripcion con ia/whisper_models/medium",
+        "fast_model_path": "D:/Transcripcion con ia/whisper_models/base",
         "device": "cpu",
         "compute_type": "int8",
     },
@@ -154,8 +155,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "wake_word": {
         "engine": "openwakeword",
         "model": "hey_jarvis",
-        "threshold": 0.45,
-        "consecutive_frames": 4,
+        "threshold": 0.04,
+        "consecutive_frames": 6,
         "extra_gain": 2.0,
     },
 }
@@ -164,6 +165,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 # Core load / save / merge
 # ---------------------------------------------------------------------------
+
 
 def load() -> dict[str, Any]:
     """Load config from ~/.claudio/config.yaml, or return defaults."""
@@ -202,6 +204,7 @@ def _deep_update(base: dict[str, Any], extra: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 # Typed accessor helpers
 # ---------------------------------------------------------------------------
+
 
 def get_wake_word_config() -> dict[str, Any]:
     """Return the 'wake_word' section of the config."""
@@ -242,6 +245,7 @@ def get_engram_config() -> dict[str, Any]:
 # Status printer
 # ---------------------------------------------------------------------------
 
+
 def print_status() -> int:
     """Pretty-print the current config — for `jarvis status`."""
     from rich.console import Console
@@ -250,9 +254,11 @@ def print_status() -> int:
     console = Console()
     cfg = load()
 
-    console.print("[bold cyan]Hey Jarvis — current config (v{ver})[/bold cyan]".format(
-        ver=cfg.get("version", "?"),
-    ))
+    console.print(
+        "[bold cyan]Hey Jarvis — current config (v{ver})[/bold cyan]".format(
+            ver=cfg.get("version", "?"),
+        )
+    )
     console.print(f"  Config file: [dim]{CONFIG_PATH}[/dim]")
 
     # Jarvis core
