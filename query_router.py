@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
+import threading
 import time
 import urllib.request
 import urllib.error
@@ -28,6 +30,7 @@ class QueryRouter:
         self._system_prompt_local = self._load_prompt(SYSTEM_PROMPT_LOCAL_FILE)
         self._default_backend = config.get("default_backend", "claude-p")
         self._timeout = config.get("timeout_seconds", 60)
+        self._lock = threading.Lock()
         log.info(
             "[QueryRouter] Initialized — default=%s, timeout=%ds",
             self._default_backend,
@@ -44,11 +47,12 @@ class QueryRouter:
 
     # Ordered fallback chains per backend.
     _FALLBACK_ORDER: dict[str, list[str]] = {
-        "claude-p": ["claude-p", "local-qwen"],
-        "claude-api": ["claude-api", "local-qwen"],
+        "claude-p": ["claude-p", "opencode", "local-qwen"],
+        "claude-api": ["claude-api", "opencode", "local-qwen"],
+        "opencode": ["opencode", "claude-p", "local-qwen"],
         "openai": ["openai", "local-qwen"],
         "gemini": ["gemini", "local-qwen"],
-        "local-qwen": ["local-qwen", "claude-p"],
+        "local-qwen": ["local-qwen", "opencode", "claude-p"],
     }
 
     def _dispatch(self, backend: str, user_text: str) -> QueryResult:
@@ -57,6 +61,8 @@ class QueryRouter:
             return self._query_claude_p(user_text)
         if backend == "claude-api":
             return self._query_claude_api(user_text)
+        if backend == "opencode":
+            return self._query_opencode(user_text)
         if backend == "openai":
             return self._query_openai(user_text)
         if backend == "gemini":
@@ -65,9 +71,26 @@ class QueryRouter:
             return self._query_local_qwen(user_text)
         return QueryResult(ok=False, error=f"Unknown backend: {backend}")
 
+    @staticmethod
+    def _resolve_command(command: str) -> str:
+        """Resolve CLI shims reliably on Windows before spawning subprocesses."""
+        resolved = shutil.which(command)
+        if resolved:
+            return resolved
+
+        if os.name == "nt":
+            for suffix in (".cmd", ".exe", ".bat"):
+                resolved = shutil.which(f"{command}{suffix}")
+                if resolved:
+                    return resolved
+
+        return command
+
     def query(self, user_text: str, backend: str | None = None) -> QueryResult:
         """Send a query to the specified backend with automatic fallback."""
-        backend = backend or self._default_backend
+        if backend is None:
+            with self._lock:
+                backend = self._default_backend
         chain = self._FALLBACK_ORDER.get(backend, [backend])
         log.info(
             "[QueryRouter] Querying backend=%s, text=%s...", backend, user_text[:80]
@@ -109,11 +132,40 @@ class QueryRouter:
         # All backends exhausted — return the last error.
         return last_result  # type: ignore[return-value]
 
+    def get_default_backend(self) -> str:
+        with self._lock:
+            return self._default_backend
+
+    def set_default_backend(self, backend: str) -> None:
+        available = self.get_available_backends()
+        if backend not in available:
+            raise ValueError(f"Unknown backend: {backend}")
+        with self._lock:
+            self._default_backend = backend
+        log.info("[QueryRouter] Default backend changed to %s", backend)
+
+    def get_available_backends(self) -> list[str]:
+        configured = list(self._config.get("backends", {}).keys())
+        return [
+            backend for backend in configured if backend in self._dispatchable_backends
+        ]
+
+    @property
+    def _dispatchable_backends(self) -> set[str]:
+        return {
+            "claude-p",
+            "claude-api",
+            "opencode",
+            "openai",
+            "gemini",
+            "local-qwen",
+        }
+
     def _query_claude_p(self, user_text: str) -> QueryResult:
         """Query via claude -p subprocess."""
         prompt = f"{self._system_prompt}\n\n---\n\nUser: {user_text}"
         backends_cfg = self._config.get("backends", {}).get("claude-p", {})
-        command = backends_cfg.get("command", "claude")
+        command = self._resolve_command(backends_cfg.get("command", "claude"))
         args = backends_cfg.get("args", ["-p"])
 
         try:
@@ -210,6 +262,82 @@ class QueryRouter:
             return QueryResult(
                 ok=False, error=f"local-qwen response parse error: {exc}"
             )
+
+    def _query_opencode(self, user_text: str) -> QueryResult:
+        """Query OpenCode via non-interactive JSON event stream."""
+        prompt = f"{self._system_prompt}\n\n---\n\nUser: {user_text}"
+        backend_cfg = self._get_backend_config("opencode")
+        command = self._resolve_command(backend_cfg.get("command", "opencode"))
+        args = backend_cfg.get("args", ["run", "--format", "json"])
+
+        try:
+            result = subprocess.run(
+                [command, *args, prompt],
+                capture_output=True,
+                text=True,
+                timeout=self._timeout,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if result.returncode != 0:
+                error_msg = (
+                    result.stderr.strip()[:200]
+                    if result.stderr
+                    else f"exit code {result.returncode}"
+                )
+                log.error("[QueryRouter] opencode failed: %s", error_msg)
+                return QueryResult(ok=False, error=error_msg)
+
+            text = self._extract_opencode_text(result.stdout)
+            if not text:
+                return QueryResult(
+                    ok=False, error="opencode returned empty text stream"
+                )
+
+            log.info("[QueryRouter] opencode responded (%d chars)", len(text))
+            return QueryResult(ok=True, text=text)
+
+        except FileNotFoundError:
+            log.error("[QueryRouter] opencode binary not found")
+            return QueryResult(ok=False, error="opencode binary not found")
+        except subprocess.TimeoutExpired:
+            log.error("[QueryRouter] opencode timed out after %ds", self._timeout)
+            return QueryResult(ok=False, error=f"timeout after {self._timeout}s")
+
+    @staticmethod
+    def _extract_opencode_text(stdout: str) -> str:
+        """Extract the final text payload from OpenCode JSONL output."""
+        parts: list[str] = []
+        for raw_line in stdout.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") != "text":
+                continue
+
+            candidate = ""
+            part = event.get("part")
+            if isinstance(part, dict):
+                part_text = part.get("text")
+                if isinstance(part_text, str) and part_text.strip():
+                    candidate = part_text
+
+            if not candidate:
+                text = event.get("text")
+                if isinstance(text, str) and text.strip():
+                    candidate = text
+
+            if not candidate:
+                candidate = QueryRouter._extract_text_content(event.get("content"))
+
+            if candidate:
+                parts.append(candidate)
+
+        return "".join(parts).strip()
 
     @staticmethod
     def _extract_text_content(content: object) -> str:
