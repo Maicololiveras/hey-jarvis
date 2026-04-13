@@ -218,3 +218,7 @@ class STT:
         )
         log.info("Whisper model loaded.")
         return self._model
+
+    def preload(self) -> None:
+        """Pre-load the Whisper model so first transcription is fast."""
+        self._ensure_model()

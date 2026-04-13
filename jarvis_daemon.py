@@ -9,6 +9,7 @@ Wires together all Jarvis modules:
   TTS (functions)→  edge-tts / pyttsx3 speech output
   JarvisUI       →  circular visual feedback window
 """
+
 from __future__ import annotations
 
 import logging
@@ -42,7 +43,7 @@ class JarvisDaemon:
     """
 
     def __init__(self, ui: JarvisUI | None = None) -> None:
-        setup_logging()
+        # NOTE: setup_logging() is called in __main__.py — do NOT call it again here
 
         cfg = config.load()
         jarvis_cfg: dict[str, Any] = cfg.get("jarvis", {})
@@ -62,6 +63,8 @@ class JarvisDaemon:
             device=stt_cfg.get("device", "cpu"),
             compute_type=stt_cfg.get("compute_type", "int8"),
         )
+        # Pre-load Whisper model at startup so first transcription is fast
+        self.stt.preload()
 
         self.router = QueryRouter(config.get_query_config())
         self.engram = EngramBridge(
@@ -198,13 +201,15 @@ class JarvisDaemon:
         self.audio.set_mute_window(duration + 1.0)
 
         # 5. Track exchange ─────────────────────────────────────────────
-        self._exchanges.append({
-            "user": text,
-            "response": result.text[:500],
-            "language": language,
-            "backend": result.backend,
-            "timestamp": time.time(),
-        })
+        self._exchanges.append(
+            {
+                "user": text,
+                "response": result.text[:500],
+                "language": language,
+                "backend": result.backend,
+                "timestamp": time.time(),
+            }
+        )
 
         # 6. Back to listening ──────────────────────────────────────────
         self.state.record_audio_activity()
@@ -230,10 +235,13 @@ class JarvisDaemon:
             # Speaking: synthetic pulse (can't tap ffplay output in V1)
             t = time.time()
             num_bands = 48
-            pulse = np.array([
-                0.3 + 0.7 * abs(math.sin(2.0 * math.pi * 2.0 * t + i * 0.15))
-                for i in range(num_bands)
-            ], dtype=np.float32)
+            pulse = np.array(
+                [
+                    0.3 + 0.7 * abs(math.sin(2.0 * math.pi * 2.0 * t + i * 0.15))
+                    for i in range(num_bands)
+                ],
+                dtype=np.float32,
+            )
             self.ui.send_command(UICommand("update_waveform", pulse))
         else:
             # Listening: forward real mic audio for live waveform
@@ -252,7 +260,9 @@ class JarvisDaemon:
             len(self._exchanges),
         )
         self.state.deactivate()
-        self.ui.send_command(UICommand("update_waveform", np.zeros(48, dtype=np.float32)))
+        self.ui.send_command(
+            UICommand("update_waveform", np.zeros(48, dtype=np.float32))
+        )
         self.ui.send_command(UICommand("set_state", "idle"))
         self.ui.send_command(UICommand("hide"))
 
