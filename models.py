@@ -1,4 +1,5 @@
 """Shared data models — contracts between Jarvis modules."""
+
 from __future__ import annotations
 
 import time
@@ -11,6 +12,7 @@ import numpy as np
 @dataclass(frozen=True, slots=True)
 class WakeEvent:
     """Emitted when the wake word is detected."""
+
     score: float
     timestamp: float = field(default_factory=time.time)
 
@@ -18,18 +20,27 @@ class WakeEvent:
 @dataclass(frozen=True, slots=True)
 class SegmentEvent:
     """Emitted when a speech segment is captured after VAD."""
+
     audio: np.ndarray
     duration_seconds: float
     timestamp: float = field(default_factory=time.time)
 
 
+@dataclass(frozen=True, slots=True)
+class TickEvent:
+    """Periodic heartbeat emitted while the audio stream is idle."""
+
+    timestamp: float = field(default_factory=time.time)
+
+
 # Union type for the audio pipeline generator
-AudioEvent = Union[WakeEvent, SegmentEvent]
+AudioEvent = Union[WakeEvent, SegmentEvent, TickEvent]
 
 
 @dataclass(frozen=True, slots=True)
 class QueryResult:
     """Result from a backend query (claude-p, local-qwen, etc.)."""
+
     ok: bool
     text: str = ""
     backend: str = ""
@@ -40,5 +51,6 @@ class QueryResult:
 @dataclass(frozen=True, slots=True)
 class UICommand:
     """Command sent from daemon thread to UI thread via queue."""
+
     action: str  # "show", "hide", "update_waveform", "set_state"
     data: object = None  # np.ndarray for waveform, str for state name

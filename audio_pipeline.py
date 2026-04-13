@@ -332,7 +332,7 @@ try:
 except ImportError:
     _OPENWAKEWORD_AVAILABLE = False
 
-from jarvis.models import AudioEvent, SegmentEvent, WakeEvent
+from jarvis.models import AudioEvent, SegmentEvent, TickEvent, WakeEvent
 
 # Silero VAD requires exactly 512 samples per window at 16 kHz.
 _SILERO_WINDOW_SAMPLES = 512
@@ -549,6 +549,10 @@ class AudioPipeline:
                                 device_index,
                             )
                             no_audio_last_log = now
+                    # Emit a heartbeat so the daemon can keep checking
+                    # silence timeout and refreshing UI state even when no
+                    # wake/VAD event is produced.
+                    yield TickEvent(timestamp=now)
                     continue
 
                 # ── Mute window — skip processing after TTS ──

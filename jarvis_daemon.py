@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 import time
 from typing import Any
 
 import numpy as np
 
 from . import config
-from .models import WakeEvent, SegmentEvent, UICommand
+from .models import TickEvent, WakeEvent, SegmentEvent, UICommand
 from .state_machine import StateMachine, State
 from .audio_pipeline import AudioPipeline
 from .stt import STT
@@ -125,6 +126,8 @@ class JarvisDaemon:
                     self._handle_wake(event)
                 elif isinstance(event, SegmentEvent):
                     self._handle_segment(event)
+                elif isinstance(event, TickEvent):
+                    continue
 
         except KeyboardInterrupt:
             log.info("[JarvisDaemon] Interrupted — shutting down")
@@ -146,8 +149,7 @@ class JarvisDaemon:
         )
         self.state.activate()
         self.ui.send_command(UICommand("show"))
-        self.ui.send_command(UICommand("set_state", "speaking"))
-        duration = tts_module.speak("Si, te escucho", "es")
+        duration = self._speak_with_ui_feedback("Si, te escucho", "es")
         # Short mute to avoid echo, but don't over-mute — user needs to talk right after
         self.audio.set_mute_window(duration + 0.3)
         self.ui.send_command(UICommand("set_state", "listening"))
@@ -206,7 +208,7 @@ class JarvisDaemon:
 
         if not result.ok:
             log.error("[JarvisDaemon] Query failed: %s", result.error)
-            tts_module.speak(
+            self._speak_with_ui_feedback(
                 "Lo siento, hubo un error procesando tu consulta.",
                 language or "es",
             )
@@ -221,8 +223,7 @@ class JarvisDaemon:
         )
 
         # 4. Speak response ─────────────────────────────────────────────
-        self.ui.send_command(UICommand("set_state", "speaking"))
-        duration = tts_module.speak(result.text, language or None)
+        duration = self._speak_with_ui_feedback(result.text, language or None)
 
         # Mute the mic for the TTS duration + 1s buffer to avoid echo.
         self.audio.set_mute_window(duration + 1.0)
@@ -246,7 +247,7 @@ class JarvisDaemon:
     # UI waveform helpers
     # ------------------------------------------------------------------
 
-    def _feed_ui_waveform(self) -> None:
+    def _feed_ui_waveform(self, speaking_override: bool | None = None) -> None:
         """Send audio level data to the UI based on the current state.
 
         - **listening**: forward the last raw mic chunk from AudioPipeline
@@ -258,23 +259,48 @@ class JarvisDaemon:
         if not self.state.is_activo:
             return
 
-        if tts_module.is_speaking():
-            # Speaking: synthetic pulse (can't tap ffplay output in V1)
+        speaking = (
+            tts_module.is_speaking() if speaking_override is None else speaking_override
+        )
+
+        if speaking:
+            # Speaking: synthesize a short audio-like chunk so the UI FFT sees
+            # a stronger, continuously changing signal during TTS playback.
             t = time.time()
-            num_bands = 48
-            pulse = np.array(
-                [
-                    0.3 + 0.7 * abs(math.sin(2.0 * math.pi * 2.0 * t + i * 0.15))
-                    for i in range(num_bands)
-                ],
-                dtype=np.float32,
+            sample_count = 1024
+            x = np.linspace(0.0, 1.0, sample_count, dtype=np.float32)
+            envelope = 0.35 + 0.65 * (0.5 + 0.5 * math.sin(2.0 * math.pi * 3.2 * t))
+            shimmer = 0.65 + 0.35 * (0.5 + 0.5 * math.sin(2.0 * math.pi * 0.9 * t))
+            pulse = envelope * (
+                0.75 * np.sin(2.0 * math.pi * (3.0 + shimmer) * x + t * 10.0)
+                + 0.45 * np.sin(2.0 * math.pi * (7.0 + shimmer * 1.5) * x + t * 16.0)
+                + 0.25 * np.sin(2.0 * math.pi * 13.0 * x + t * 7.0)
             )
-            self.ui.send_command(UICommand("update_waveform", pulse))
+            self.ui.send_command(UICommand("update_waveform", pulse.astype(np.float32)))
         else:
             # Listening: forward real mic audio for live waveform
             chunk = self.audio.last_chunk
             if chunk is not None and len(chunk) > 0:
                 self.ui.send_command(UICommand("update_waveform", chunk))
+
+    def _speak_with_ui_feedback(self, text: str, language: str | None) -> float:
+        """Run blocking TTS on a worker thread while keeping UI animation alive."""
+        self.ui.send_command(UICommand("set_state", "speaking"))
+
+        result: dict[str, float] = {"duration": 0.0}
+
+        def _run_tts() -> None:
+            result["duration"] = tts_module.speak(text, language)
+
+        worker = threading.Thread(target=_run_tts, name="jarvis-tts", daemon=True)
+        worker.start()
+
+        while worker.is_alive():
+            self._feed_ui_waveform(speaking_override=True)
+            time.sleep(0.05)
+
+        worker.join()
+        return result["duration"]
 
     # ------------------------------------------------------------------
     # State transitions
