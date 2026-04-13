@@ -1,8 +1,10 @@
 """Query routing to AI backends."""
+
 from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import time
 import urllib.request
@@ -26,7 +28,11 @@ class QueryRouter:
         self._system_prompt_local = self._load_prompt(SYSTEM_PROMPT_LOCAL_FILE)
         self._default_backend = config.get("default_backend", "claude-p")
         self._timeout = config.get("timeout_seconds", 60)
-        log.info("[QueryRouter] Initialized — default=%s, timeout=%ds", self._default_backend, self._timeout)
+        log.info(
+            "[QueryRouter] Initialized — default=%s, timeout=%ds",
+            self._default_backend,
+            self._timeout,
+        )
 
     @staticmethod
     def _load_prompt(path: Path) -> str:
@@ -39,6 +45,9 @@ class QueryRouter:
     # Ordered fallback chains per backend.
     _FALLBACK_ORDER: dict[str, list[str]] = {
         "claude-p": ["claude-p", "local-qwen"],
+        "claude-api": ["claude-api", "local-qwen"],
+        "openai": ["openai", "local-qwen"],
+        "gemini": ["gemini", "local-qwen"],
         "local-qwen": ["local-qwen", "claude-p"],
     }
 
@@ -46,6 +55,12 @@ class QueryRouter:
         """Dispatch a query to a single backend by name."""
         if backend == "claude-p":
             return self._query_claude_p(user_text)
+        if backend == "claude-api":
+            return self._query_claude_api(user_text)
+        if backend == "openai":
+            return self._query_openai(user_text)
+        if backend == "gemini":
+            return self._query_gemini(user_text)
         if backend == "local-qwen":
             return self._query_local_qwen(user_text)
         return QueryResult(ok=False, error=f"Unknown backend: {backend}")
@@ -54,7 +69,9 @@ class QueryRouter:
         """Send a query to the specified backend with automatic fallback."""
         backend = backend or self._default_backend
         chain = self._FALLBACK_ORDER.get(backend, [backend])
-        log.info("[QueryRouter] Querying backend=%s, text=%s...", backend, user_text[:80])
+        log.info(
+            "[QueryRouter] Querying backend=%s, text=%s...", backend, user_text[:80]
+        )
 
         last_result: QueryResult | None = None
         for attempt_backend in chain:
@@ -80,7 +97,7 @@ class QueryRouter:
             )
 
             # If there are more backends in the chain, log the fallback.
-            remaining = chain[chain.index(attempt_backend) + 1:]
+            remaining = chain[chain.index(attempt_backend) + 1 :]
             if remaining:
                 next_backend = remaining[0]
                 log.warning(
@@ -109,7 +126,11 @@ class QueryRouter:
                 errors="replace",
             )
             if result.returncode != 0:
-                error_msg = result.stderr.strip()[:200] if result.stderr else f"exit code {result.returncode}"
+                error_msg = (
+                    result.stderr.strip()[:200]
+                    if result.stderr
+                    else f"exit code {result.returncode}"
+                )
                 log.error("[QueryRouter] claude-p failed: %s", error_msg)
                 return QueryResult(ok=False, error=error_msg)
 
@@ -118,7 +139,9 @@ class QueryRouter:
             return QueryResult(ok=True, text=response)
 
         except FileNotFoundError:
-            log.error("[QueryRouter] claude binary not found — is claude-code installed?")
+            log.error(
+                "[QueryRouter] claude binary not found — is claude-code installed?"
+            )
             return QueryResult(ok=False, error="claude binary not found")
         except subprocess.TimeoutExpired:
             log.error("[QueryRouter] claude-p timed out after %ds", self._timeout)
@@ -131,14 +154,16 @@ class QueryRouter:
         port = backends_cfg.get("port", 8081)
         url = f"{host}:{port}/v1/chat/completions"
 
-        payload = json.dumps({
-            "messages": [
-                {"role": "system", "content": self._system_prompt_local},
-                {"role": "user", "content": user_text},
-            ],
-            "temperature": 0.7,
-            "max_tokens": 2048,
-        }).encode("utf-8")
+        payload = json.dumps(
+            {
+                "messages": [
+                    {"role": "system", "content": self._system_prompt_local},
+                    {"role": "user", "content": user_text},
+                ],
+                "temperature": 0.7,
+                "max_tokens": 2048,
+            }
+        ).encode("utf-8")
 
         req = urllib.request.Request(
             url,
@@ -162,16 +187,157 @@ class QueryRouter:
 
         except ConnectionRefusedError:
             log.error("[QueryRouter] local-qwen server not running at %s", url)
-            return QueryResult(ok=False, error=f"local-qwen server not running at {url}")
+            return QueryResult(
+                ok=False, error=f"local-qwen server not running at {url}"
+            )
         except urllib.error.URLError as exc:
             log.error("[QueryRouter] local-qwen connection error: %s", exc.reason)
-            return QueryResult(ok=False, error=f"local-qwen connection error: {exc.reason}")
+            return QueryResult(
+                ok=False, error=f"local-qwen connection error: {exc.reason}"
+            )
         except urllib.error.HTTPError as exc:
             log.error("[QueryRouter] local-qwen HTTP %d: %s", exc.code, exc.reason)
-            return QueryResult(ok=False, error=f"local-qwen HTTP {exc.code}: {exc.reason}")
+            return QueryResult(
+                ok=False, error=f"local-qwen HTTP {exc.code}: {exc.reason}"
+            )
         except TimeoutError:
             log.error("[QueryRouter] local-qwen timed out after %ds", self._timeout)
-            return QueryResult(ok=False, error=f"local-qwen timeout after {self._timeout}s")
+            return QueryResult(
+                ok=False, error=f"local-qwen timeout after {self._timeout}s"
+            )
         except (json.JSONDecodeError, KeyError, IndexError) as exc:
             log.error("[QueryRouter] local-qwen response parse error: %s", exc)
-            return QueryResult(ok=False, error=f"local-qwen response parse error: {exc}")
+            return QueryResult(
+                ok=False, error=f"local-qwen response parse error: {exc}"
+            )
+
+    @staticmethod
+    def _extract_text_content(content: object) -> str:
+        """Normalize SDK-specific content payloads to plain text."""
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+                else:
+                    text = getattr(item, "text", None)
+                    if isinstance(text, str):
+                        parts.append(text)
+            return "\n".join(part.strip() for part in parts if part).strip()
+        return ""
+
+    def _get_backend_config(self, backend: str) -> dict:
+        return self._config.get("backends", {}).get(backend, {})
+
+    def _get_api_key(self, backend: str, default_env: str) -> tuple[str | None, str]:
+        backend_cfg = self._get_backend_config(backend)
+        env_name = backend_cfg.get("api_key_env", default_env)
+        api_key = os.getenv(env_name, "").strip()
+        if not api_key:
+            return None, env_name
+        return api_key, env_name
+
+    def _query_openai(self, user_text: str) -> QueryResult:
+        """Query OpenAI directly via the official SDK."""
+        api_key, env_name = self._get_api_key("openai", "OPENAI_API_KEY")
+        if not api_key:
+            return QueryResult(ok=False, error=f"Missing API key in env var {env_name}")
+
+        try:
+            from openai import OpenAI  # noqa: WPS433 (lazy import)
+        except ImportError:
+            return QueryResult(
+                ok=False, error="OpenAI SDK not installed; add package 'openai'"
+            )
+
+        backend_cfg = self._get_backend_config("openai")
+        model = backend_cfg.get("model", "gpt-4o")
+
+        try:
+            client = OpenAI(api_key=api_key)
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": self._system_prompt},
+                    {"role": "user", "content": user_text},
+                ],
+                timeout=self._timeout,
+            )
+            text = response.choices[0].message.content or ""
+            return QueryResult(ok=True, text=text.strip())
+        except Exception as exc:  # pragma: no cover - network/sdk surface
+            log.error("[QueryRouter] openai failed: %s", exc)
+            return QueryResult(ok=False, error=f"openai request failed: {exc}")
+
+    def _query_claude_api(self, user_text: str) -> QueryResult:
+        """Query Anthropic directly via the official SDK."""
+        api_key, env_name = self._get_api_key("claude-api", "ANTHROPIC_API_KEY")
+        if not api_key:
+            return QueryResult(ok=False, error=f"Missing API key in env var {env_name}")
+
+        try:
+            from anthropic import Anthropic  # noqa: WPS433 (lazy import)
+        except ImportError:
+            return QueryResult(
+                ok=False, error="Anthropic SDK not installed; add package 'anthropic'"
+            )
+
+        backend_cfg = self._get_backend_config("claude-api")
+        model = backend_cfg.get("model", "claude-sonnet-4-6")
+
+        try:
+            client = Anthropic(api_key=api_key)
+            response = client.messages.create(
+                model=model,
+                max_tokens=2048,
+                system=self._system_prompt,
+                messages=[{"role": "user", "content": user_text}],
+                timeout=self._timeout,
+            )
+            text = self._extract_text_content(getattr(response, "content", []))
+            if not text:
+                return QueryResult(ok=False, error="claude-api returned empty content")
+            return QueryResult(ok=True, text=text)
+        except Exception as exc:  # pragma: no cover - network/sdk surface
+            log.error("[QueryRouter] claude-api failed: %s", exc)
+            return QueryResult(ok=False, error=f"claude-api request failed: {exc}")
+
+    def _query_gemini(self, user_text: str) -> QueryResult:
+        """Query Gemini directly via google-genai."""
+        api_key, env_name = self._get_api_key("gemini", "GEMINI_API_KEY")
+        if not api_key:
+            return QueryResult(ok=False, error=f"Missing API key in env var {env_name}")
+
+        try:
+            from google import genai  # noqa: WPS433 (lazy import)
+        except ImportError:
+            return QueryResult(
+                ok=False,
+                error="google-genai SDK not installed; add package 'google-genai'",
+            )
+
+        backend_cfg = self._get_backend_config("gemini")
+        model = backend_cfg.get("model", "gemini-2.5-pro")
+        prompt = f"{self._system_prompt}\n\n---\n\nUser: {user_text}"
+
+        try:
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(model=model, contents=prompt)
+            text = self._extract_text_content(getattr(response, "text", ""))
+            if not text:
+                candidates = getattr(response, "candidates", [])
+                if candidates:
+                    first_candidate = candidates[0]
+                    content = getattr(first_candidate, "content", None)
+                    if content is not None:
+                        text = self._extract_text_content(getattr(content, "parts", []))
+            if not text:
+                return QueryResult(ok=False, error="gemini returned empty content")
+            return QueryResult(ok=True, text=text)
+        except Exception as exc:  # pragma: no cover - network/sdk surface
+            log.error("[QueryRouter] gemini failed: %s", exc)
+            return QueryResult(ok=False, error=f"gemini request failed: {exc}")

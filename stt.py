@@ -76,11 +76,19 @@ class STT:
         device: str = "cpu",
         compute_type: str = "int8",
         fast_model_path: str = "",
+        engine: str = "faster-whisper",
+        api_key_env: str = "GROQ_API_KEY",
+        language: str = "auto",
+        groq_model: str = "whisper-large-v3",
     ) -> None:
+        self._engine = engine
         self._model_path = model_path  # precise (medium)
         self._fast_model_path = fast_model_path  # fast (base/tiny)
         self._device = device
         self._compute_type = compute_type
+        self._api_key_env = api_key_env
+        self._language = language
+        self._groq_model = groq_model
         self._model = None  # precise model — lazy-loaded
         self._fast_model = None  # fast model — lazy-loaded
 
@@ -119,6 +127,9 @@ class STT:
             ``detected_language_code`` is the ISO-639-1 code Whisper
             inferred (e.g. ``"es"``, ``"en"``).
         """
+        if self._engine == "groq":
+            return self._transcribe_groq(audio, strict=strict)
+
         if fast and self._fast_model_path:
             model = self._ensure_fast_model()
         else:
@@ -234,6 +245,8 @@ class STT:
 
     def preload(self, *, fast: bool = True, precise: bool = True) -> None:
         """Pre-load the Whisper models that will actually be used."""
+        if self._engine != "faster-whisper":
+            return
         if fast and self._fast_model_path:
             self._ensure_fast_model()
         if precise:
@@ -259,3 +272,60 @@ class STT:
         )
         log.info("Fast Whisper model loaded.")
         return self._fast_model
+
+    def _transcribe_groq(self, audio: np.ndarray, *, strict: bool) -> tuple[str, str]:
+        """Transcribe audio via Groq Whisper cloud API."""
+        api_key = os.getenv(self._api_key_env, "").strip()
+        if not api_key:
+            log.error("Groq STT requires env var %s", self._api_key_env)
+            return "", ""
+
+        try:
+            from groq import Groq  # noqa: WPS433 (lazy import)
+        except ImportError:
+            log.error("Groq SDK not installed; add package 'groq'")
+            return "", ""
+
+        tmp = tempfile.mktemp(suffix=".wav")
+        try:
+            pcm = (audio.flatten() * 32767).astype(np.int16)
+            with wave.open(tmp, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(_WHISPER_SAMPLE_RATE)
+                wf.writeframes(pcm.tobytes())
+
+            t0 = time.time()
+            client = Groq(api_key=api_key)
+            with open(tmp, "rb") as audio_file:
+                request_kwargs = {
+                    "file": (os.path.basename(tmp), audio_file.read()),
+                    "model": self._groq_model,
+                    "response_format": "verbose_json",
+                }
+                if self._language != "auto":
+                    request_kwargs["language"] = self._language
+                response = client.audio.transcriptions.create(**request_kwargs)
+
+            text = (getattr(response, "text", "") or "").strip()
+            detected_lang = getattr(
+                response, "language", self._language if self._language != "auto" else ""
+            )
+            elapsed = time.time() - t0
+            text = self._filter(text, strict=strict, elapsed=elapsed)
+            if text:
+                log.info(
+                    "Groq transcription (%.2fs, lang=%s): '%s'",
+                    elapsed,
+                    detected_lang,
+                    text,
+                )
+            return text, detected_lang
+        except Exception as exc:  # pragma: no cover - network/sdk surface
+            log.error("Groq transcription failed: %s", exc)
+            return "", ""
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass

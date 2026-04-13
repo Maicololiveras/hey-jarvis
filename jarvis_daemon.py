@@ -63,6 +63,10 @@ class JarvisDaemon:
             device=stt_cfg.get("device", "cpu"),
             compute_type=stt_cfg.get("compute_type", "int8"),
             fast_model_path=stt_cfg.get("fast_model_path", ""),
+            engine=stt_cfg.get("engine", "faster-whisper"),
+            api_key_env=stt_cfg.get("api_key_env", "GROQ_API_KEY"),
+            language=jarvis_cfg.get("language", "auto"),
+            groq_model=stt_cfg.get("model", "whisper-large-v3"),
         )
         self._use_precise_stt = bool(stt_cfg.get("use_precise_pass", False))
         # Pre-load only the models we will actually use to avoid paying

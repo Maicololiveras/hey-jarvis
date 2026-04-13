@@ -32,9 +32,11 @@ audio:
 # Speech-to-Text
 # ---------------------------------------------------------------------------
 stt:
-  engine: "faster-whisper"         # STT engine (only faster-whisper supported)
+  engine: "faster-whisper"         # STT engine: "faster-whisper" | "groq"
   model_path: "D:/Transcripcion con ia/whisper_models/medium"  # Path to Whisper model
   fast_model_path: "D:/Transcripcion con ia/whisper_models/tiny"  # Fast wake/command model
+  model: "whisper-large-v3"        # Groq Whisper model when engine="groq"
+  api_key_env: "GROQ_API_KEY"      # Env var that stores the Groq API key
   use_precise_pass: false          # true = run a second medium pass before querying AI
   device: "cpu"                    # "cpu" | "cuda"
   compute_type: "int8"            # "int8" | "float16" | "float32"
@@ -54,7 +56,7 @@ tts:
 # Query backends
 # ---------------------------------------------------------------------------
 query:
-  default_backend: "claude-p"      # Which backend to use by default
+  default_backend: "claude-api"    # "claude-p" | "claude-api" | "openai" | "gemini" | "local-qwen"
   timeout_seconds: 60              # Timeout for query responses
 
   backends:
@@ -62,6 +64,18 @@ query:
       command: "claude"            # CLI command to run
       args:
         - "-p"                     # Arguments passed to the command
+
+    claude-api:
+      model: "claude-sonnet-4-6"   # Anthropic model name
+      api_key_env: "ANTHROPIC_API_KEY"  # Env var for Anthropic API key
+
+    openai:
+      model: "gpt-4o"              # OpenAI model name
+      api_key_env: "OPENAI_API_KEY"  # Env var for OpenAI API key
+
+    gemini:
+      model: "gemini-2.5-pro"      # Gemini model name
+      api_key_env: "GEMINI_API_KEY"  # Env var for Gemini API key
 
     local-qwen:
       host: "http://localhost"     # Local model server host

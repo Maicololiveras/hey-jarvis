@@ -24,6 +24,8 @@ Format (version 2):
       engine: "faster-whisper"
       model_path: "D:/Transcripcion con ia/whisper_models/medium"
       fast_model_path: "D:/Transcripcion con ia/whisper_models/base"
+      model: "whisper-large-v3"
+      api_key_env: "GROQ_API_KEY"
       use_precise_pass: false
       device: "cpu"
       compute_type: "int8"
@@ -37,12 +39,21 @@ Format (version 2):
       offline_fallback: true
 
     query:
-      default_backend: "claude-p"
+      default_backend: "claude-api"
       timeout_seconds: 60
       backends:
         claude-p:
           command: "claude"
           args: ["-p"]
+        claude-api:
+          model: "claude-sonnet-4-6"
+          api_key_env: "ANTHROPIC_API_KEY"
+        openai:
+          model: "gpt-4o"
+          api_key_env: "OPENAI_API_KEY"
+        gemini:
+          model: "gemini-2.5-pro"
+          api_key_env: "GEMINI_API_KEY"
         local-qwen:
           host: "http://localhost"
           port: 8081
@@ -111,6 +122,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "engine": "faster-whisper",
         "model_path": "D:/Transcripcion con ia/whisper_models/medium",
         "fast_model_path": "D:/Transcripcion con ia/whisper_models/base",
+        "model": "whisper-large-v3",
+        "api_key_env": "GROQ_API_KEY",
         "use_precise_pass": False,
         "device": "cpu",
         "compute_type": "int8",
@@ -124,12 +137,24 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "offline_fallback": True,
     },
     "query": {
-        "default_backend": "claude-p",
+        "default_backend": "claude-api",
         "timeout_seconds": 60,
         "backends": {
             "claude-p": {
                 "command": "claude",
                 "args": ["-p"],
+            },
+            "claude-api": {
+                "model": "claude-sonnet-4-6",
+                "api_key_env": "ANTHROPIC_API_KEY",
+            },
+            "openai": {
+                "model": "gpt-4o",
+                "api_key_env": "OPENAI_API_KEY",
+            },
+            "gemini": {
+                "model": "gemini-2.5-pro",
+                "api_key_env": "GEMINI_API_KEY",
             },
             "local-qwen": {
                 "host": "http://localhost",
