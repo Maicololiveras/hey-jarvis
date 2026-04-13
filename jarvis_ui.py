@@ -1,4 +1,5 @@
 """Jarvis visual UI — circular transparent window with audio waveform."""
+
 from __future__ import annotations
 
 import logging
@@ -39,10 +40,12 @@ except ImportError:
 # Config helpers
 # ---------------------------------------------------------------------------
 
+
 def _load_ui_config() -> dict:
     """Load UI section from config, with sane defaults."""
     try:
         from .config import get_ui_config
+
         return get_ui_config()
     except Exception:
         return {}
@@ -95,10 +98,10 @@ if HAS_PYQT6:
 
             # --- State color map ---------------------------------------
             self._state_colors = {
-                "idle":       QColor("#00BFFF"),
-                "listening":  QColor("#00BFFF"),
+                "idle": QColor("#00BFFF"),
+                "listening": QColor("#00BFFF"),
                 "processing": QColor("#00D4E8"),  # warmer cyan
-                "speaking":   QColor("#00FFFF"),   # cyan-green
+                "speaking": QColor("#00FFFF"),  # cyan-green
             }
 
             # --- Thread-safe command queue ------------------------------
@@ -123,6 +126,15 @@ if HAS_PYQT6:
             self._timer = QTimer(self)
             self._timer.timeout.connect(self._process_queue)
             self._timer.start(timer_interval_ms)
+
+            # Preload the widget at startup so the first UICommand("show") only
+            # flips visibility instead of paying Qt's initial show/render cost.
+            self.show()
+            self.repaint()
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents()
+            self.setVisible(False)
 
             log.info(
                 "JarvisUI initialized: %dpx circle, %dfps timer",
@@ -177,7 +189,9 @@ if HAS_PYQT6:
                 log.debug("UI state: %s -> %s", self._ui_state, state)
                 self._ui_state = state
                 self._state_time = time.time()
-                self._color_primary = self._state_colors.get(state, self._state_colors["idle"])
+                self._color_primary = self._state_colors.get(
+                    state, self._state_colors["idle"]
+                )
                 self.update()
 
         # ---------------------------------------------------------------
@@ -229,9 +243,7 @@ if HAS_PYQT6:
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QBrush(center_glow))
             glow_r = radius * 0.35
-            painter.drawEllipse(
-                QPointF(center_x, center_y), glow_r, glow_r
-            )
+            painter.drawEllipse(QPointF(center_x, center_y), glow_r, glow_r)
 
             # --- Radial waveform lines (state-driven) ------------------
             has_audio = np.any(self._waveform_data > 0.01)
@@ -271,9 +283,7 @@ if HAS_PYQT6:
                 ring_pen.setCosmetic(True)
                 painter.setPen(ring_pen)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawEllipse(
-                    QPointF(center_x, center_y), breath_r, breath_r
-                )
+                painter.drawEllipse(QPointF(center_x, center_y), breath_r, breath_r)
 
                 # Still draw subtle short waveform lines for texture
                 for i in range(self._num_lines):
@@ -414,7 +424,9 @@ if HAS_PYQT6:
                 if isinstance(data, np.ndarray):
                     self.update_waveform(data)
                 else:
-                    log.warning("update_waveform: expected np.ndarray, got %s", type(data))
+                    log.warning(
+                        "update_waveform: expected np.ndarray, got %s", type(data)
+                    )
             elif action == "set_state":
                 state = cmd.data if isinstance(cmd.data, str) else "idle"
                 self.set_state(state)
@@ -427,13 +439,12 @@ if HAS_PYQT6:
 
         def show_ui(self) -> None:
             """Show the circular window."""
-            self.show()
-            self.raise_()
+            self.setVisible(True)
             log.debug("JarvisUI shown")
 
         def hide_ui(self) -> None:
             """Hide the circular window."""
-            self.hide()
+            self.setVisible(False)
             log.debug("JarvisUI hidden")
 
         @staticmethod
@@ -455,8 +466,6 @@ if HAS_PYQT6:
                 app = QApplication(sys.argv)
 
             ui = JarvisUI()
-            # Start hidden — daemon sends UICommand("show") on wake word
-            ui.hide()
 
             if on_ready is not None:
                 on_ready(ui)
