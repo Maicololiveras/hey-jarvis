@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+*.log.1
+
+# Config (user-specific)
+config.yaml
+
+# Models (too large for git)
+*.gguf
+*.bin
+*.pt
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Virtual environment
+.venv/
+venv/

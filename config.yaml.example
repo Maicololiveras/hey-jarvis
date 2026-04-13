@@ -1,0 +1,99 @@
+# Hey Jarvis — Configuration
+# Copy this file to ~/.claudio/config.yaml and customize
+#
+# All values shown are defaults. Uncomment and change as needed.
+
+version: 2
+
+# ---------------------------------------------------------------------------
+# Core Jarvis settings
+# ---------------------------------------------------------------------------
+jarvis:
+  wake_word: "hey jarvis"          # Wake word phrase
+  wake_word_model: "hey_jarvis_v1" # Model name for wake word detection
+  silence_timeout_seconds: 5       # Seconds of silence before ending utterance
+  language: "auto"                 # "auto" | "en" | "es"
+
+# ---------------------------------------------------------------------------
+# Audio capture & preprocessing
+# ---------------------------------------------------------------------------
+audio:
+  sample_rate: 16000               # Sample rate in Hz (16kHz for STT models)
+  channels: 1                      # Mono audio
+  chunk_duration_ms: 80            # Audio chunk size in milliseconds
+  device_override: null             # null = auto-detect; set index to force device
+  pre_gain: 2.0                    # Pre-amplification gain factor
+  highpass_cutoff_hz: 200          # High-pass filter cutoff to remove low rumble
+  agc_target_peak: 0.9            # Automatic Gain Control target peak level
+  agc_max_gain: 10.0              # AGC maximum gain multiplier
+  agc_min_peak: 0.01              # AGC minimum peak threshold (below = silence)
+
+# ---------------------------------------------------------------------------
+# Speech-to-Text
+# ---------------------------------------------------------------------------
+stt:
+  engine: "faster-whisper"         # STT engine (only faster-whisper supported)
+  model_path: "D:/Transcripcion con ia/whisper_models/medium"  # Path to Whisper model
+  device: "cpu"                    # "cpu" | "cuda"
+  compute_type: "int8"            # "int8" | "float16" | "float32"
+
+# ---------------------------------------------------------------------------
+# Text-to-Speech
+# ---------------------------------------------------------------------------
+tts:
+  engine: "edge-tts"               # TTS engine (edge-tts for online)
+  voice_es: "es-CO-GonzaloNeural"  # Spanish voice name
+  voice_en: "en-US-GuyNeural"      # English voice name
+  rate: "+5%"                      # Speaking rate adjustment
+  playback: "ffplay"               # Audio playback binary
+  offline_fallback: true           # Fall back to pyttsx3 if edge-tts fails
+
+# ---------------------------------------------------------------------------
+# Query backends
+# ---------------------------------------------------------------------------
+query:
+  default_backend: "claude-p"      # Which backend to use by default
+  timeout_seconds: 60              # Timeout for query responses
+
+  backends:
+    claude-p:
+      command: "claude"            # CLI command to run
+      args:
+        - "-p"                     # Arguments passed to the command
+
+    local-qwen:
+      host: "http://localhost"     # Local model server host
+      port: 8081                   # Local model server port
+      model_path: "path/to/model.gguf"  # Path to GGUF model file
+
+# ---------------------------------------------------------------------------
+# Visual UI (PyQt6 circular overlay)
+# ---------------------------------------------------------------------------
+ui:
+  enabled: true                    # Enable/disable the visual overlay
+  shape: "circle"                  # Window shape
+  diameter: 200                    # Circle diameter in pixels
+  position: "center"              # Screen position: "center"
+  colors:
+    primary: "#00BFFF"             # Primary accent color (Deep Sky Blue)
+    glow: "#FFFFFF"                # Glow/highlight color
+    background: "rgba(0, 20, 40, 0.6)"  # Semi-transparent background
+  fps: 60                          # UI refresh rate
+
+# ---------------------------------------------------------------------------
+# Engram persistent memory
+# ---------------------------------------------------------------------------
+engram:
+  enabled: true                    # Enable engram memory integration
+  auto_save_sessions: true         # Auto-save session summaries
+  context_on_query: true           # Search engram for context before queries
+
+# ---------------------------------------------------------------------------
+# Wake word detection engine
+# ---------------------------------------------------------------------------
+wake_word:
+  engine: "openwakeword"           # Wake word engine
+  model: "hey_jarvis"             # Model identifier
+  threshold: 0.45                  # Detection confidence threshold (0.0-1.0)
+  consecutive_frames: 4            # Required consecutive frames above threshold
+  extra_gain: 2.0                 # Additional gain for wake word audio stream

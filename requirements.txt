@@ -1,0 +1,11 @@
+PyQt6>=6.6
+faster-whisper>=1.0
+edge-tts>=6.1
+openwakeword>=0.6
+sounddevice>=0.4
+numpy>=1.24
+torch>=2.0
+silero-vad>=5.0
+pyyaml>=6.0
+pyttsx3>=2.90
+llama-cpp-python>=0.2
