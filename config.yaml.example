@@ -58,12 +58,17 @@ tts:
 query:
   default_backend: "claude-api"    # "claude-p" | "claude-api" | "opencode" | "openai" | "gemini" | "local-qwen"
   timeout_seconds: 60              # Timeout for query responses
+  max_history: 5                   # Keep only the last 5 user/assistant exchanges
 
   backends:
     claude-p:
       command: "claude"            # CLI command to run
       args:
         - "-p"                     # Arguments passed to the command
+        - "--bare"
+        - "--model"
+        - "haiku"
+        - "--no-session-persistence"
 
     opencode:
       command: "opencode"          # CLI command to run
@@ -73,7 +78,7 @@ query:
         - "json"
 
     claude-api:
-      model: "claude-sonnet-4-6"   # Anthropic model name
+      model: "claude-haiku-4-5"    # Anthropic model name
       api_key_env: "ANTHROPIC_API_KEY"  # Env var for Anthropic API key
 
     openai:
