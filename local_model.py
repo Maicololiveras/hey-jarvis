@@ -152,6 +152,9 @@ def get_server_from_config(config: dict) -> LocalModelServer | None:
     if not model_path:
         log.warning("[LocalModel] local-qwen.model_path not configured")
         return None
+    if not os.path.isfile(model_path):
+        log.warning("[LocalModel] Model file not found, skipping preload: %s", model_path)
+        return None
 
     return LocalModelServer(
         model_path=model_path,
