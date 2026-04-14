@@ -89,6 +89,11 @@ class JarvisDaemon:
         # The caller can pass a pre-created UI instance so that the daemon
         # sends commands to the same widget displayed on screen.
         self.ui: JarvisUI = ui if ui is not None else JarvisUI()
+        self.ui.configure_backend_selector(
+            current_backend=self.router.get_default_backend(),
+            available_backends=self._ui_available_backends(),
+            on_backend_selected=self._on_backend_changed,
+        )
 
         # ── Maix AI Engine preload check ────────────────────────────────
         self._local_model_server = get_server_from_config(cfg)
@@ -125,6 +130,30 @@ class JarvisDaemon:
         self._worker_thread.start()
 
         log.info("[JarvisDaemon] All modules initialized (pipeline worker started)")
+
+    def _ui_available_backends(self) -> list[str]:
+        """Return UI-selectable backends in a stable user-facing order."""
+        preferred_order = ("claude-p", "opencode", "groq", "maix-engine")
+        available = set(self.router.get_available_backends())
+        return [backend for backend in preferred_order if backend in available]
+
+    def _on_backend_changed(self, backend: str) -> None:
+        """Handle UI backend selection changes."""
+        try:
+            previous = self.router.get_default_backend()
+            self.router.set_default_backend(backend)
+            self.ui.configure_backend_selector(
+                current_backend=self.router.get_default_backend(),
+                available_backends=self._ui_available_backends(),
+                on_backend_selected=self._on_backend_changed,
+            )
+            log.info(
+                "[JarvisDaemon] Backend changed via UI: %s -> %s",
+                previous,
+                backend,
+            )
+        except Exception as exc:
+            log.error("[JarvisDaemon] Failed to change backend to %s: %s", backend, exc)
 
     # ------------------------------------------------------------------
     # Background query worker (Stage 1 → Stage 2)
