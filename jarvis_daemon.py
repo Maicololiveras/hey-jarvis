@@ -295,10 +295,10 @@ class JarvisDaemon:
 
     def _is_processing_or_speaking(self) -> bool:
         """Check if Jarvis is currently processing a query or speaking TTS."""
+        ui_state = getattr(self.ui, '_ui_state', 'idle')
         return (
             tts_module.is_speaking()
-            or self.ui.current_state == "processing"
-            or self.ui.current_state == "speaking"
+            or ui_state in ("processing", "speaking")
         )
 
     def _enter_active_listening(self, reason: str) -> None:
