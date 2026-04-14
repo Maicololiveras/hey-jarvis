@@ -228,12 +228,18 @@ class QueryRouter:
 
     @staticmethod
     def _is_invalid_claude_p_response(response: str) -> bool:
-        normalized = response.strip().lower()
+        normalized = response.strip()
         if not normalized:
             return True
-        return any(
-            pattern in normalized for pattern in CLAUDE_P_INVALID_RESPONSE_PATTERNS
-        )
+        # Strip trailing session-terminated noise from claude -p output
+        for pattern in CLAUDE_P_INVALID_RESPONSE_PATTERNS:
+            if normalized.lower().endswith(pattern):
+                normalized = normalized[: -len(pattern)].strip()
+        # If after stripping noise there's still real content, it's valid
+        if len(normalized) > 10:
+            return False
+        # Only reject if the ENTIRE response is garbage
+        return normalized.lower() in CLAUDE_P_INVALID_RESPONSE_PATTERNS or not normalized
 
     def get_default_backend(self) -> str:
         with self._lock:
