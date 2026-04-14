@@ -197,8 +197,9 @@ def _decode_mp3_to_pcm(filepath: str) -> tuple[np.ndarray, int]:
     sample_rate: int = 0
 
     for frame in container.decode(audio=0):
-        # Resample to s16 (signed 16-bit) layout for consistent handling.
-        resampled = frame.to_ndarray(format="s16")
+        # Reformat to s16 (signed 16-bit) for consistent handling.
+        reformatted = frame.reformat(format="s16")
+        resampled = reformatted.to_ndarray()
         if sample_rate == 0:
             sample_rate = frame.sample_rate
         frames.append(resampled)
