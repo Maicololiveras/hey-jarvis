@@ -1,4 +1,5 @@
 """Two-state state machine for Jarvis daemon."""
+
 from __future__ import annotations
 
 import logging
@@ -21,7 +22,11 @@ class StateMachine:
         self._state_entered_at = time.time()
         self._last_audio_time = time.time()
         self._silence_timeout = silence_timeout
-        log.info("[Jarvis] StateMachine initialized — state=%s, timeout=%.1fs", self._state.value, silence_timeout)
+        log.info(
+            "[Jarvis] StateMachine initialized — state=%s, timeout=%.1fs",
+            self._state.value,
+            silence_timeout,
+        )
 
     @property
     def state(self) -> State:
@@ -57,6 +62,7 @@ class StateMachine:
             return False
         self._state = State.DORMIDO
         self._state_entered_at = time.time()
+        self._last_audio_time = self._state_entered_at
         log.info("[Jarvis] State: ACTIVO -> DORMIDO at %.3f", self._state_entered_at)
         return True
 
@@ -78,6 +84,10 @@ class StateMachine:
             return False
         elapsed = time.time() - self._last_audio_time
         if elapsed >= self._silence_timeout:
-            log.info("[Jarvis] Silence timeout reached (%.1fs >= %.1fs)", elapsed, self._silence_timeout)
+            log.info(
+                "[Jarvis] Silence timeout reached (%.1fs >= %.1fs)",
+                elapsed,
+                self._silence_timeout,
+            )
             return True
         return False

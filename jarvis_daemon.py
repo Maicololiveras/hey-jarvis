@@ -115,6 +115,9 @@ class JarvisDaemon:
                     if self.state.check_silence_timeout(
                         tts_playing=tts_module.is_speaking(),
                     ):
+                        log.info(
+                            "[JarvisDaemon] No speech for 5s, returning to DORMIDO"
+                        )
                         self._deactivate()
                         continue
 
@@ -317,6 +320,9 @@ class JarvisDaemon:
             "[JarvisDaemon] Deactivating — saving session with %d exchanges",
             len(self._exchanges),
         )
+        clear_history = getattr(self.router, "clear_history", None)
+        if callable(clear_history):
+            clear_history()
         self.state.deactivate()
         self.ui.send_command(
             UICommand("update_waveform", np.zeros(48, dtype=np.float32))
