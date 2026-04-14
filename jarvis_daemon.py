@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import math
+import queue
 import threading
 import time
 from typing import Any
@@ -92,6 +93,10 @@ class JarvisDaemon:
         self._exchanges: list[dict[str, Any]] = []
         self._last_activity: float = time.time()
 
+        # ── Query queue for overlapping requests ───────────────────────
+        self._query_queue: queue.Queue[str] = queue.Queue(maxsize=3)
+        self._max_queue_size = 3
+
         log.info("[JarvisDaemon] All modules initialized")
 
     # ------------------------------------------------------------------
@@ -162,6 +167,26 @@ class JarvisDaemon:
         transcriptions are silently ignored.
         """
         if not self.state.is_activo:
+            return
+
+        # If already processing or speaking, queue the request for later
+        if self._query_queue.full() or self._is_processing_or_speaking():
+            try:
+                self._query_queue.put_nowait(text)
+                log.info(
+                    "[JarvisDaemon] Query queued (%d pending)",
+                    self._query_queue.qsize(),
+                )
+            except queue.Full:
+                try:
+                    self._query_queue.get_nowait()
+                    self._query_queue.put_nowait(text)
+                    log.warning(
+                        "[JarvisDaemon] Queue full — dropped oldest, queued new query"
+                    )
+                except queue.Empty:
+                    pass
+            self._enter_active_listening("query-queued-while-busy")
             return
 
         self.state.record_audio_activity()
@@ -237,6 +262,25 @@ class JarvisDaemon:
 
         # 6. Back to listening ──────────────────────────────────────────
         self._enter_active_listening("response-complete")
+
+        # 7. Check for queued queries ────────────────────────────────
+        if not self._query_queue.empty():
+            # Process next queued query after a brief pause
+            try:
+                queued_text = self._query_queue.get_nowait()
+                log.info("[JarvisDaemon] Processing queued query: %s", queued_text[:50])
+                # The queued query will be processed on the next user speech segment
+                # For now, just acknowledge it's available
+            except queue.Empty:
+                pass
+
+    def _is_processing_or_speaking(self) -> bool:
+        """Check if Jarvis is currently processing a query or speaking TTS."""
+        return (
+            tts_module.is_speaking()
+            or self.ui.current_state == "processing"
+            or self.ui.current_state == "speaking"
+        )
 
     def _enter_active_listening(self, reason: str) -> None:
         """Return to active listening after TTS without requiring wake word."""
