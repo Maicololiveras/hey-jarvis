@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import platform
 from typing import Any
 
 import numpy as np
@@ -29,6 +30,15 @@ except ImportError:
     nr = None
     _NOISEREDUCE_AVAILABLE = False
 
+_DEEPFILTERNET_IMPORT_ATTEMPTED = False
+_DEEPFILTERNET_AVAILABLE = False
+_DEEPFILTERNET_IMPORT_ERROR: Exception | None = None
+_DEEPFILTERNET_MODEL: Any | None = None
+_DEEPFILTERNET_STATE: Any | None = None
+_DEEPFILTERNET_ENHANCE: Any | None = None
+_DEEPFILTERNET_WARNED = False
+_RAW_FALLBACK_WARNED = False
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -39,7 +49,7 @@ _DEFAULTS: dict[str, Any] = {
     "pre_gain": 2.0,
     "highpass_cutoff_hz": 80,
     "agc_target_peak": 0.9,
-    "agc_max_gain": 10.0,
+    "agc_max_gain": 20.0,
     "agc_min_peak": 0.01,
     "noise_reduce": False,
     "device_override": None,
@@ -231,16 +241,118 @@ def preprocess_segment(
     return np.clip(boosted, -1.0, 1.0).astype(np.float32)
 
 
+def _load_deepfilternet() -> bool:
+    """Load DeepFilterNet lazily so Windows/runtime failures can fall back cleanly."""
+    global _DEEPFILTERNET_IMPORT_ATTEMPTED
+    global _DEEPFILTERNET_AVAILABLE
+    global _DEEPFILTERNET_IMPORT_ERROR
+    global _DEEPFILTERNET_MODEL
+    global _DEEPFILTERNET_STATE
+    global _DEEPFILTERNET_ENHANCE
+
+    if _DEEPFILTERNET_IMPORT_ATTEMPTED:
+        return _DEEPFILTERNET_AVAILABLE
+
+    _DEEPFILTERNET_IMPORT_ATTEMPTED = True
+
+    try:
+        from df import enhance as df_enhance, init_df
+
+        model, state, _ = init_df()
+        _DEEPFILTERNET_MODEL = model
+        _DEEPFILTERNET_STATE = state
+        _DEEPFILTERNET_ENHANCE = df_enhance
+        _DEEPFILTERNET_AVAILABLE = True
+        logger.info("DeepFilterNet loaded for VAD/STT noise reduction")
+    except Exception as exc:
+        _DEEPFILTERNET_IMPORT_ERROR = exc
+        _DEEPFILTERNET_AVAILABLE = False
+
+    return _DEEPFILTERNET_AVAILABLE
+
+
+def _deepfilternet_sample_rate() -> int | None:
+    """Return the DeepFilterNet model sample rate when exposed by the backend."""
+    if _DEEPFILTERNET_STATE is None:
+        return None
+
+    sr_attr = getattr(_DEEPFILTERNET_STATE, "sr", None)
+    if callable(sr_attr):
+        try:
+            return int(sr_attr())
+        except Exception:
+            return None
+    if sr_attr is not None:
+        try:
+            return int(sr_attr)
+        except Exception:
+            return None
+    return None
+
+
 def _apply_noise_reduction(
     audio: np.ndarray,
     audio_cfg: dict[str, Any],
 ) -> np.ndarray:
-    """Apply conservative stationary noise reduction when enabled."""
+    """Apply DeepFilterNet first, then noisereduce, then raw fallback."""
+    global _DEEPFILTERNET_WARNED, _RAW_FALLBACK_WARNED
+
     noise_reduce_enabled = audio_cfg.get("noise_reduce", _DEFAULTS["noise_reduce"])
     if not noise_reduce_enabled or audio.size == 0:
         return audio
 
+    sample_rate = int(audio_cfg.get("sample_rate", _DEFAULTS["sample_rate"]))
+
+    if _load_deepfilternet():
+        try:
+            df_sample_rate = _deepfilternet_sample_rate()
+            if df_sample_rate is not None and df_sample_rate != sample_rate:
+                raise RuntimeError(
+                    f"model expects {df_sample_rate}Hz, got {sample_rate}Hz"
+                )
+
+            enhanced = _DEEPFILTERNET_ENHANCE(
+                _DEEPFILTERNET_MODEL,
+                _DEEPFILTERNET_STATE,
+                torch.as_tensor(audio, dtype=torch.float32),
+            )
+            if isinstance(enhanced, torch.Tensor):
+                enhanced_audio = enhanced.detach().cpu().numpy()
+            else:
+                enhanced_audio = np.asarray(enhanced, dtype=np.float32)
+            return np.clip(np.asarray(enhanced_audio, dtype=np.float32), -1.0, 1.0)
+        except Exception as exc:
+            if not _DEEPFILTERNET_WARNED:
+                if platform.system() == "Windows":
+                    logger.warning(
+                        "DeepFilterNet failed on Windows — falling back to noisereduce: %s",
+                        exc,
+                    )
+                else:
+                    logger.warning(
+                        "DeepFilterNet failed — falling back to noisereduce: %s",
+                        exc,
+                    )
+                _DEEPFILTERNET_WARNED = True
+    elif _DEEPFILTERNET_IMPORT_ERROR is not None and not _DEEPFILTERNET_WARNED:
+        if platform.system() == "Windows":
+            logger.warning(
+                "DeepFilterNet unavailable on Windows — falling back to noisereduce: %s",
+                _DEEPFILTERNET_IMPORT_ERROR,
+            )
+        else:
+            logger.warning(
+                "DeepFilterNet unavailable — falling back to noisereduce: %s",
+                _DEEPFILTERNET_IMPORT_ERROR,
+            )
+        _DEEPFILTERNET_WARNED = True
+
     if not _NOISEREDUCE_AVAILABLE:
+        if not _RAW_FALLBACK_WARNED:
+            logger.warning(
+                "noisereduce package not installed — continuing with unfiltered audio"
+            )
+            _RAW_FALLBACK_WARNED = True
         return audio
 
     try:
@@ -251,7 +363,7 @@ def _apply_noise_reduction(
             prop_decrease=0.8,
         )
     except Exception as exc:
-        logger.warning("Noise reduction failed — continuing without filter: %s", exc)
+        logger.warning("noisereduce failed — continuing with unfiltered audio: %s", exc)
         return audio
 
     return np.clip(np.asarray(reduced, dtype=np.float32), -1.0, 1.0)
@@ -414,7 +526,6 @@ class AudioPipeline:
         self._closed = False
         self._last_audio_frame_at: float = 0.0
         self._recent_rms_peak: float = 0.0
-        self._noise_reduction_warned = False
 
         # Mute window — suppresses processing after TTS playback.
         self._mute_until: float = 0.0
@@ -435,14 +546,6 @@ class AudioPipeline:
         self._ow_model: OpenWakeWordModel | None = None
         self._ow_model_key: str | None = None
 
-        if (
-            self._audio_cfg.get("noise_reduce", _DEFAULTS["noise_reduce"])
-            and not _NOISEREDUCE_AVAILABLE
-        ):
-            logger.warning(
-                "noisereduce package not installed — skipping noise reduction"
-            )
-            self._noise_reduction_warned = True
         if (
             wake_cfg.get("engine", "openwakeword") == "openwakeword"
             and _OPENWAKEWORD_AVAILABLE
@@ -608,15 +711,10 @@ class AudioPipeline:
                 if rms > 0.01:
                     logger.debug("Audio chunk: rms=%.4f, len=%d", rms, len(samples))
 
-                # Keep wake-word audio on the existing path; noise reduction is
-                # only applied to the VAD/STT branch so openWakeWord behavior is preserved.
+                # Keep wake-word audio on the existing path; cleaning is only
+                # applied to the VAD/STT branch so openWakeWord behavior is preserved.
                 samples = preprocess_chunk(samples, self._audio_cfg)
                 vad_samples = _apply_noise_reduction(samples, self._audio_cfg)
-                if not _NOISEREDUCE_AVAILABLE and not self._noise_reduction_warned:
-                    logger.warning(
-                        "noisereduce package not installed — skipping noise reduction"
-                    )
-                    self._noise_reduction_warned = True
 
                 # Expose the latest preprocessed chunk for UI audio levels.
                 self.last_chunk = samples
