@@ -14,7 +14,7 @@ Format (version 2):
       channels: 1
       chunk_duration_ms: 80
       device_override: null
-      pre_gain: 5.0
+      pre_gain: 2.0
       highpass_cutoff_hz: 80
       agc_target_peak: 0.9
       agc_max_gain: 20.0
@@ -35,8 +35,8 @@ Format (version 2):
       voice_es: "es-CO-GonzaloNeural"
       voice_en: "en-US-GuyNeural"
       rate: "+5%"
-      playback: "ffplay"
-      offline_fallback: true
+      playback: "internal"
+      offline_fallback: false
 
     query:
       default_backend: "claude-api"
@@ -45,6 +45,9 @@ Format (version 2):
         claude-p:
           command: "claude"
           args: ["-p"]
+        opencode:
+          command: "opencode"
+          args: ["run", "--format", "json"]
         claude-api:
           model: "claude-sonnet-4-6"
           api_key_env: "ANTHROPIC_API_KEY"
@@ -78,8 +81,8 @@ Format (version 2):
     wake_word:
       engine: "openwakeword"
       model: "hey_jarvis"
-      threshold: 0.04
-      consecutive_frames: 2
+      threshold: 0.1
+      consecutive_frames: 6
       extra_gain: 2.0
 """
 
@@ -112,7 +115,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "channels": 1,
         "chunk_duration_ms": 80,
         "device_override": None,
-        "pre_gain": 5.0,
+        "pre_gain": 2.0,
         "highpass_cutoff_hz": 80,
         "agc_target_peak": 0.9,
         "agc_max_gain": 20.0,
@@ -133,8 +136,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "voice_es": "es-CO-GonzaloNeural",
         "voice_en": "en-US-GuyNeural",
         "rate": "+5%",
-        "playback": "ffplay",
-        "offline_fallback": True,
+        "playback": "internal",
+        "offline_fallback": False,
     },
     "query": {
         "default_backend": "claude-api",
@@ -143,6 +146,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "claude-p": {
                 "command": "claude",
                 "args": ["-p"],
+            },
+            "opencode": {
+                "command": "opencode",
+                "args": ["run", "--format", "json"],
             },
             "claude-api": {
                 "model": "claude-sonnet-4-6",
@@ -183,8 +190,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "wake_word": {
         "engine": "openwakeword",
         "model": "hey_jarvis",
-        "threshold": 0.04,
-        "consecutive_frames": 2,
+        "threshold": 0.1,
+        "consecutive_frames": 6,
         "extra_gain": 2.0,
     },
 }

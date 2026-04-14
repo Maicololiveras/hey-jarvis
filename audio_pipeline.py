@@ -380,7 +380,7 @@ class AudioPipeline:
         self._last_audio_frame_at: float = 0.0
         self._recent_rms_peak: float = 0.0
 
-        # Mute window — suppresses processing after TTS playback.
+        # Kept for API compatibility, but V2 no longer discards mic audio during TTS.
         self._mute_until: float = 0.0
 
         # Internal audio queue — the sounddevice callback pushes frames here.
@@ -555,10 +555,6 @@ class AudioPipeline:
                     yield TickEvent(timestamp=now)
                     continue
 
-                # ── Mute window — skip processing after TTS ──
-                if time.time() < self._mute_until:
-                    continue
-
                 samples = chunk.flatten().astype(np.float32)
                 rms = float(np.sqrt(np.mean(samples**2)))
                 if rms > 0.01:
@@ -573,6 +569,8 @@ class AudioPipeline:
                 if leftover.size:
                     samples = np.concatenate([leftover, samples])
                     leftover = np.empty(0, dtype=np.float32)
+
+                emitted_event = False
 
                 # ── openWakeWord inference ──
                 if self._ow_model is not None:
@@ -634,7 +632,10 @@ class AudioPipeline:
                                     self._ow_model.reset()
                                 except Exception:
                                     pass
+                                ow_buffer = np.empty(0, dtype=np.float32)
+                                emitted_event = True
                                 yield WakeEvent(score=score)
+                                break
                             else:
                                 ow_consecutive_hits = 0
                         except Exception as exc:
@@ -674,6 +675,7 @@ class AudioPipeline:
                                 segment_audio, self._audio_cfg
                             )
                             duration = segment_audio.size / self._sample_rate
+                            emitted_event = True
                             yield SegmentEvent(
                                 audio=segment_audio,
                                 duration_seconds=duration,
@@ -684,18 +686,20 @@ class AudioPipeline:
                 if tail < len(samples):
                     leftover = samples[tail:].copy()
 
+                if not emitted_event:
+                    yield TickEvent(timestamp=time.time())
+
     # ------------------------------------------------------------------
     # Public control methods
     # ------------------------------------------------------------------
 
     def set_mute_window(self, duration_seconds: float) -> None:
-        """Mute audio processing for *duration_seconds* (to prevent TTS echo).
-
-        While muted, chunks from the microphone are read and discarded so the
-        sounddevice buffer does not overflow, but no events are generated.
-        """
+        """Compatibility shim retained for callers that still set a mute window."""
         self._mute_until = time.time() + duration_seconds
-        logger.debug("Mute window set: %.1fs", duration_seconds)
+        logger.debug(
+            "Mute window requested for %.1fs, but audio capture stays active in V2",
+            duration_seconds,
+        )
 
     def close(self) -> None:
         """Signal the stream loop to stop and release resources."""

@@ -22,7 +22,7 @@ audio:
   channels: 1                      # Mono audio
   chunk_duration_ms: 80            # Audio chunk size in milliseconds
   device_override: null             # null = auto-detect; set index to force device
-  pre_gain: 5.0                    # Fixed mic gain boost before VAD / wake word
+  pre_gain: 2.0                    # Fixed mic gain boost before VAD / wake word
   highpass_cutoff_hz: 80          # High-pass filter cutoff to remove low rumble
   agc_target_peak: 0.9            # Automatic Gain Control target peak level
   agc_max_gain: 20.0              # AGC maximum gain multiplier
@@ -49,14 +49,14 @@ tts:
   voice_es: "es-CO-GonzaloNeural"  # Spanish voice name
   voice_en: "en-US-GuyNeural"      # English voice name
   rate: "+5%"                      # Speaking rate adjustment
-  playback: "ffplay"               # Audio playback binary
-  offline_fallback: true           # Fall back to pyttsx3 if edge-tts fails
+  playback: "internal"            # Decode and play audio inside Jarvis
+  offline_fallback: false          # Log edge-tts failures instead of falling back
 
 # ---------------------------------------------------------------------------
 # Query backends
 # ---------------------------------------------------------------------------
 query:
-  default_backend: "claude-api"    # "claude-p" | "claude-api" | "openai" | "gemini" | "local-qwen"
+  default_backend: "claude-api"    # "claude-p" | "claude-api" | "opencode" | "openai" | "gemini" | "local-qwen"
   timeout_seconds: 60              # Timeout for query responses
 
   backends:
@@ -64,6 +64,13 @@ query:
       command: "claude"            # CLI command to run
       args:
         - "-p"                     # Arguments passed to the command
+
+    opencode:
+      command: "opencode"          # CLI command to run
+      args:
+        - "run"
+        - "--format"
+        - "json"
 
     claude-api:
       model: "claude-sonnet-4-6"   # Anthropic model name
@@ -110,6 +117,6 @@ engram:
 wake_word:
   engine: "openwakeword"           # Wake word engine
   model: "hey_jarvis"             # Model identifier
-  threshold: 0.04                  # Detection confidence threshold (0.0-1.0)
-  consecutive_frames: 2            # Required consecutive frames above threshold
+  threshold: 0.1                   # Detection confidence threshold (0.0-1.0)
+  consecutive_frames: 6            # Required consecutive frames above threshold
   extra_gain: 2.0                 # Additional gain for wake word audio stream
