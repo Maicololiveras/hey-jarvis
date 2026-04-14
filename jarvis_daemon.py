@@ -31,6 +31,7 @@ from .engram_bridge import EngramBridge
 from . import tts as tts_module  # module-level functions: speak(), is_speaking()
 from .jarvis_ui import JarvisUI
 from .logging_setup import setup_logging
+from .local_model import get_server_from_config
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +90,17 @@ class JarvisDaemon:
         # sends commands to the same widget displayed on screen.
         self.ui: JarvisUI = ui if ui is not None else JarvisUI()
 
+        # ── Local model server (precarga) ────────────────────────────────
+        self._local_model_server = get_server_from_config(cfg)
+        if self._local_model_server:
+            log.info(
+                "[JarvisDaemon] Preloading local-qwen server: %s",
+                self._local_model_server.url,
+            )
+            self._local_model_server.start()
+        else:
+            log.warning("[JarvisDaemon] local-qwen not configured, skipping preload")
+
         # ── Session tracking ───────────────────────────────────────────
         self._exchanges: list[dict[str, Any]] = []
         self._last_activity: float = time.time()
@@ -106,7 +118,9 @@ class JarvisDaemon:
 
         # Start the background query worker
         self._worker_thread = threading.Thread(
-            target=self._query_worker, name="jarvis-query-worker", daemon=True,
+            target=self._query_worker,
+            name="jarvis-query-worker",
+            daemon=True,
         )
         self._worker_thread.start()
 
@@ -147,9 +161,14 @@ class JarvisDaemon:
                 # Voice command: "Jarvis dormido" → finish queue then sleep
                 if self._is_sleep_command(fast_text):
                     log.info("[Worker] Sleep command detected: %r", fast_text)
-                    self._response_queue.put((
-                        fast_text, "__SLEEP__", language or "es", "command",
-                    ))
+                    self._response_queue.put(
+                        (
+                            fast_text,
+                            "__SLEEP__",
+                            language or "es",
+                            "command",
+                        )
+                    )
                     continue
 
                 text = fast_text
@@ -157,30 +176,43 @@ class JarvisDaemon:
                     text, language = self.stt.transcribe(event.audio, fast=False)
                     if not text or not text.strip():
                         text = fast_text
-                    log.info("[Worker] Precise transcribe (%s): %s", language, text[:100])
+                    log.info(
+                        "[Worker] Precise transcribe (%s): %s", language, text[:100]
+                    )
 
                 # 2. Enrich with Engram context
-                enriched_prompt = self.engram.enrich_prompt(text, language=language or "es")
+                enriched_prompt = self.engram.enrich_prompt(
+                    text, language=language or "es"
+                )
 
                 # 3. Query backend (blocking — this is why we run in a thread)
                 result = self.router.query(enriched_prompt)
 
                 if not result.ok:
                     log.error("[Worker] Query failed: %s", result.error)
-                    self._response_queue.put((
-                        text,
-                        "Lo siento, hubo un error procesando tu consulta.",
-                        language or "es",
-                        "error",
-                    ))
+                    self._response_queue.put(
+                        (
+                            text,
+                            "Lo siento, hubo un error procesando tu consulta.",
+                            language or "es",
+                            "error",
+                        )
+                    )
                 else:
                     log.info(
                         "[Worker] Response ready from %s (%.0fms): %s...",
-                        result.backend, result.latency_ms, result.text[:100],
+                        result.backend,
+                        result.latency_ms,
+                        result.text[:100],
                     )
-                    self._response_queue.put((
-                        text, result.text, language, result.backend,
-                    ))
+                    self._response_queue.put(
+                        (
+                            text,
+                            result.text,
+                            language,
+                            result.backend,
+                        )
+                    )
 
             except Exception:
                 log.exception("[Worker] Unhandled exception processing query")
@@ -277,7 +309,9 @@ class JarvisDaemon:
         label = "background" if event.background else "foreground"
         log.info(
             "[JarvisDaemon] Enqueueing %s segment (%.1fs audio, queue=%d)",
-            label, event.duration_seconds, self._query_queue.qsize(),
+            label,
+            event.duration_seconds,
+            self._query_queue.qsize(),
         )
 
         try:
@@ -286,7 +320,9 @@ class JarvisDaemon:
             try:
                 self._query_queue.get_nowait()
                 self._query_queue.put_nowait(event)
-                log.warning("[JarvisDaemon] Queue full — dropped oldest, enqueued new segment")
+                log.warning(
+                    "[JarvisDaemon] Queue full — dropped oldest, enqueued new segment"
+                )
             except queue.Empty:
                 pass
 
@@ -308,7 +344,9 @@ class JarvisDaemon:
 
             # Handle sleep command: finish remaining responses then deactivate
             if response_text == "__SLEEP__":
-                log.info("[JarvisDaemon] Sleep command: draining remaining responses then sleeping")
+                log.info(
+                    "[JarvisDaemon] Sleep command: draining remaining responses then sleeping"
+                )
                 # Drain any remaining responses first
                 while not self._response_queue.empty():
                     try:
@@ -324,7 +362,8 @@ class JarvisDaemon:
             played = True
             log.info(
                 "[TTS] Playing queued response (%s): %s...",
-                backend, response_text[:80],
+                backend,
+                response_text[:80],
             )
 
             # Speak on the main/daemon thread (coordinates mute window + UI)
@@ -349,9 +388,14 @@ class JarvisDaemon:
         """Check if the transcribed text is a sleep/deactivate command."""
         normalized = text.strip().lower()
         sleep_patterns = (
-            "jarvis dormido", "jarvis dormir", "jarvis duerme",
-            "jarvis apágate", "jarvis apagate", "jarvis para",
-            "jarvis stop", "jarvis sleep",
+            "jarvis dormido",
+            "jarvis dormir",
+            "jarvis duerme",
+            "jarvis apágate",
+            "jarvis apagate",
+            "jarvis para",
+            "jarvis stop",
+            "jarvis sleep",
         )
         return any(pattern in normalized for pattern in sleep_patterns)
 
@@ -480,6 +524,10 @@ class JarvisDaemon:
                 self.engram.save_session_summary(self._exchanges)
             except Exception:
                 pass
+
+        # Stop local model server if running
+        if self._local_model_server:
+            self._local_model_server.stop()
 
         self.audio.close()
         log.info("[JarvisDaemon] Shutdown complete")

@@ -164,6 +164,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "model": "gemini-2.5-pro",
                 "api_key_env": "GEMINI_API_KEY",
             },
+            "groq": {
+                "model": "llama-3.1-70b-versatile",
+                "api_key_env": "GROQ_API_KEY",
+            },
             "local-qwen": {
                 "host": "http://localhost",
                 "port": 8081,

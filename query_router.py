@@ -62,12 +62,13 @@ class QueryRouter:
 
     # Ordered fallback chains per backend.
     _FALLBACK_ORDER: dict[str, list[str]] = {
-        "claude-p": ["claude-p", "opencode", "local-qwen"],
-        "claude-api": ["claude-api", "opencode", "local-qwen"],
-        "opencode": ["opencode", "claude-p", "local-qwen"],
-        "openai": ["openai", "local-qwen"],
-        "gemini": ["gemini", "local-qwen"],
+        "claude-p": ["claude-p", "opencode", "groq", "local-qwen"],
+        "claude-api": ["claude-api", "opencode", "groq", "local-qwen"],
+        "opencode": ["opencode", "claude-p", "groq", "local-qwen"],
+        "openai": ["openai", "groq", "local-qwen"],
+        "gemini": ["gemini", "groq", "local-qwen"],
         "local-qwen": ["local-qwen", "opencode", "claude-p"],
+        "groq": ["groq", "local-qwen", "opencode"],
     }
 
     def _dispatch(self, backend: str, user_text: str) -> QueryResult:
@@ -82,9 +83,10 @@ class QueryRouter:
             return self._query_openai(user_text)
         if backend == "gemini":
             return self._query_gemini(user_text)
+        if backend == "groq":
+            return self._query_groq(user_text)
         if backend == "local-qwen":
             return self._query_local_qwen(user_text)
-        return QueryResult(ok=False, error=f"Unknown backend: {backend}")
 
     @staticmethod
     def _resolve_command(command: str) -> str:
@@ -239,7 +241,9 @@ class QueryRouter:
         if len(normalized) > 10:
             return False
         # Only reject if the ENTIRE response is garbage
-        return normalized.lower() in CLAUDE_P_INVALID_RESPONSE_PATTERNS or not normalized
+        return (
+            normalized.lower() in CLAUDE_P_INVALID_RESPONSE_PATTERNS or not normalized
+        )
 
     def get_default_backend(self) -> str:
         with self._lock:
@@ -268,6 +272,7 @@ class QueryRouter:
             "openai",
             "gemini",
             "local-qwen",
+            "groq",
         }
 
     def _query_claude_p(self, user_text: str) -> QueryResult:
@@ -578,3 +583,35 @@ class QueryRouter:
         except Exception as exc:  # pragma: no cover - network/sdk surface
             log.error("[QueryRouter] gemini failed: %s", exc)
             return QueryResult(ok=False, error=f"gemini request failed: {exc}")
+
+    def _query_groq(self, user_text: str) -> QueryResult:
+        """Query Groq cloud API (Llama models)."""
+        api_key, env_name = self._get_api_key("groq", "GROQ_API_KEY")
+        if not api_key:
+            return QueryResult(ok=False, error=f"Missing API key in env var {env_name}")
+
+        try:
+            from groq import Groq  # noqa: WPS433 (lazy import)
+        except ImportError:
+            return QueryResult(
+                ok=False, error="Groq SDK not installed; add package 'groq'"
+            )
+
+        backend_cfg = self._get_backend_config("groq")
+        model = backend_cfg.get("model", "llama-3.1-70b-versatile")
+
+        try:
+            client = Groq(api_key=api_key)
+            response = client.chat.completions.create(
+                model=model,
+                messages=self._chat_messages(user_text, self._system_prompt),
+                temperature=0.7,
+                max_tokens=512,
+                timeout=self._timeout,
+            )
+            text = response.choices[0].message.content or ""
+            log.info("[QueryRouter] groq responded (%d chars)", len(text))
+            return QueryResult(ok=True, text=text.strip())
+        except Exception as exc:  # pragma: no cover - network/sdk surface
+            log.error("[QueryRouter] groq failed: %s", exc)
+            return QueryResult(ok=False, error=f"groq request failed: {exc}")
