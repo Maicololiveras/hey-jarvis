@@ -25,6 +25,7 @@ from . import config
 from .models import TickEvent, WakeEvent, SegmentEvent, UICommand
 from .state_machine import StateMachine, State
 from .audio_pipeline import AudioPipeline
+from .echo_detector import EchoDetector
 from .stt import STT
 from .query_router import QueryRouter
 from .engram_bridge import EngramBridge
@@ -75,6 +76,7 @@ class JarvisDaemon:
         # Pre-load only the models we will actually use to avoid paying
         # startup and runtime cost for an unused precise pass.
         self.stt.preload(fast=True, precise=self._use_precise_stt)
+        self.echo_detector = EchoDetector()
 
         self.router = QueryRouter(config.get_query_config())
         self.engram = EngramBridge(
@@ -199,23 +201,6 @@ class JarvisDaemon:
                     fast_text[:100],
                 )
 
-                # Voice command: "Jarvis dormido" → finish queue then sleep
-                if self._is_sleep_command(fast_text):
-                    log.info(
-                        "[Worker] Sleep command detected (session=%s): %r",
-                        session_id,
-                        fast_text,
-                    )
-                    self._response_queue.put(
-                        (
-                            fast_text,
-                            "__SLEEP__",
-                            language or "es",
-                            "command",
-                        )
-                    )
-                    continue
-
                 text = fast_text
                 if self._use_precise_stt:
                     text, language = self.stt.transcribe(event.audio, fast=False)
@@ -227,6 +212,27 @@ class JarvisDaemon:
                         language,
                         text[:100],
                     )
+
+                text = self.echo_detector.check(text)
+                if text is None or not text.strip():
+                    continue
+
+                # Voice command: "Jarvis dormido" → finish queue then sleep
+                if self._is_sleep_command(text):
+                    log.info(
+                        "[Worker] Sleep command detected (session=%s): %r",
+                        session_id,
+                        text,
+                    )
+                    self._response_queue.put(
+                        (
+                            text,
+                            "__SLEEP__",
+                            language or "es",
+                            "command",
+                        )
+                    )
+                    continue
 
                 # 2. Enrich with Engram context
                 enriched_prompt = self.engram.enrich_prompt(
@@ -527,6 +533,7 @@ class JarvisDaemon:
             language,
             text[:80],
         )
+        self.echo_detector.track_tts_start(text, tts_module.estimate_duration(text))
 
         result: dict[str, float] = {"duration": 0.0}
 
