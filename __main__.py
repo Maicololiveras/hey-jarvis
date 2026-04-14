@@ -74,6 +74,10 @@ def main() -> int:
     if not _check_singleton():
         return 0
 
+    # Kill any orphan ffplay from previous crashed sessions
+    from .tts import kill_active_playback
+    kill_active_playback()
+
     try:
         # Qt event loop runs on the main thread (hard requirement).
         # on_ready fires once the QApplication + widget exist, spinning

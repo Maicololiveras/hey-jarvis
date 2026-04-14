@@ -24,6 +24,29 @@ logger = logging.getLogger(__name__)
 # Windows flag to hide console window when launching subprocesses.
 _CREATE_NO_WINDOW = 0x08000000
 
+# Track active ffplay process for cleanup on shutdown.
+_active_ffplay: subprocess.Popen | None = None
+
+
+def kill_active_playback() -> None:
+    """Kill any running ffplay process. Call on shutdown or restart."""
+    global _active_ffplay
+    if _active_ffplay and _active_ffplay.poll() is None:
+        try:
+            _active_ffplay.kill()
+            logger.info("Killed active ffplay (PID %d)", _active_ffplay.pid)
+        except Exception:
+            pass
+    _active_ffplay = None
+    # Also kill any orphan ffplay processes
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "ffplay.exe"],
+            capture_output=True, creationflags=_CREATE_NO_WINDOW,
+        )
+    except Exception:
+        pass
+
 # Rough chars-per-second estimate for speech duration.
 _CHARS_PER_SECOND = 15.0
 
@@ -171,13 +194,16 @@ async def _speak_online(text: str, voice: str, cfg: dict) -> None:
     playback = _resolve_playback_binary(cfg.get("playback"))
     logger.debug("Playing TTS via %s -> %s", playback, output)
 
+    global _active_ffplay
     proc = subprocess.Popen(
         [playback, "-nodisp", "-autoexit", "-loglevel", "quiet", output],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=_CREATE_NO_WINDOW,
     )
+    _active_ffplay = proc
     proc.wait()  # block until playback finishes so _speaking stays accurate
+    _active_ffplay = None
 
 
 def _speak_offline(text: str, language: str, cfg: dict) -> None:
