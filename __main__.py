@@ -18,6 +18,8 @@ Startup sequence:
 import sys
 import threading
 import logging
+import tempfile
+import os
 
 from .logging_setup import setup_logging
 from .jarvis_daemon import JarvisDaemon
@@ -41,9 +43,36 @@ def _start_daemon(ui: JarvisUI) -> None:
     log.info("[Jarvis] Daemon thread started")
 
 
+_LOCK_FILE = os.path.join(tempfile.gettempdir(), "jarvis_singleton.lock")
+
+
+def _check_singleton() -> bool:
+    """Return True if no other Jarvis instance is running."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-Command",
+             "Get-CimInstance Win32_Process | Where-Object "
+             "{ $_.CommandLine -like '*-m jarvis*' -and $_.Name -eq 'python.exe' "
+             "-and $_.ProcessId -ne " + str(os.getpid()) + " } | "
+             "Select-Object -ExpandProperty ProcessId"],
+            capture_output=True, text=True, timeout=5
+        )
+        pids = [p.strip() for p in result.stdout.strip().split("\n") if p.strip()]
+        if pids:
+            log.warning("[Jarvis] Another instance already running (PIDs: %s). Exiting.", ", ".join(pids))
+            return False
+    except Exception:
+        pass  # If check fails, proceed anyway
+    return True
+
+
 def main() -> int:
     setup_logging(level="DEBUG")
     log.info("[Jarvis] ===== Hey Jarvis starting =====")
+
+    if not _check_singleton():
+        return 0
 
     try:
         # Qt event loop runs on the main thread (hard requirement).
