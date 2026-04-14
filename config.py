@@ -27,8 +27,8 @@ Format (version 2):
       model: "whisper-large-v3"
       api_key_env: "GROQ_API_KEY"
       use_precise_pass: false
-      device: "cpu"
-      compute_type: "int8"
+      device: "cuda"
+      compute_type: "int8_float16"
 
     tts:
       engine: "edge-tts"
@@ -128,8 +128,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "model": "whisper-large-v3",
         "api_key_env": "GROQ_API_KEY",
         "use_precise_pass": False,
-        "device": "cpu",
-        "compute_type": "int8",
+        "device": "cuda",
+        "compute_type": "int8_float16",
     },
     "tts": {
         "engine": "edge-tts",
