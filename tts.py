@@ -230,6 +230,14 @@ _last_speech_end: float = 0.0
 _speaking: bool = False
 
 
+def estimate_duration(text: str) -> float:
+    """Return the rough duration estimate used for TTS coordination."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return 0.0
+    return len(cleaned) / _CHARS_PER_SECOND
+
+
 def is_speaking() -> bool:
     """Return ``True`` if a TTS utterance is currently playing.
 
@@ -421,7 +429,7 @@ def speak(text: str, language: Optional[str] = None) -> float:
     voice = _pick_voice(lang, cfg)
     offline_fallback = cfg.get("offline_fallback", True)
 
-    duration = len(text) / _CHARS_PER_SECOND
+    duration = estimate_duration(text)
 
     logger.info(
         "TTS speak [lang=%s voice=%s est=%.1fs]: %.60s%s",
