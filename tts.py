@@ -191,32 +191,32 @@ def _decode_mp3_to_pcm(filepath: str) -> tuple[np.ndarray, int]:
     import av
 
     container = av.open(filepath)
-    stream = container.streams.audio[0]
+
+    # Use AudioResampler to convert to s16 mono for sounddevice
+    resampler = av.AudioResampler(format="s16", layout="mono", rate=24000)
 
     frames: list[np.ndarray] = []
-    sample_rate: int = 0
+    sample_rate = 24000
 
     for frame in container.decode(audio=0):
-        # Reformat to s16 (signed 16-bit) for consistent handling.
-        reformatted = frame.reformat(format="s16")
-        resampled = reformatted.to_ndarray()
-        if sample_rate == 0:
-            sample_rate = frame.sample_rate
-        frames.append(resampled)
+        resampled_frames = resampler.resample(frame)
+        for resampled in resampled_frames:
+            arr = resampled.to_ndarray()
+            frames.append(arr)
 
     container.close()
 
     if not frames:
         raise RuntimeError(f"No audio frames decoded from {filepath}")
 
-    # Concatenate all frames: shape is (num_samples, channels) for s16.
+    # Concatenate: to_ndarray() gives (channels, samples) for s16
     raw = np.concatenate(frames, axis=1 if frames[0].ndim == 2 else 0)
 
-    # s16 format from PyAV: rows = channels, cols = samples → transpose.
+    # Transpose to (samples, channels) if needed
     if raw.ndim == 2:
-        raw = raw.T  # Now shape is (samples, channels).
+        raw = raw.T
 
-    # Convert int16 to float32 in [-1.0, 1.0] for sounddevice.
+    # Convert int16 to float32 in [-1.0, 1.0] for sounddevice
     audio_data = raw.astype(np.float32) / 32768.0
 
     return audio_data, sample_rate
