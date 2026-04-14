@@ -35,11 +35,14 @@ class QueryRouter:
         self._system_prompt_local = self._load_prompt(SYSTEM_PROMPT_LOCAL_FILE)
         self._default_backend = config.get("default_backend", "claude-p")
         self._timeout = config.get("timeout_seconds", 60)
+        self._max_history = self._coerce_max_history(config.get("max_history", 5))
+        self._history: list[dict[str, str]] = []
         self._lock = threading.Lock()
         log.info(
-            "[QueryRouter] Initialized — default=%s, timeout=%ds",
+            "[QueryRouter] Initialized — default=%s, timeout=%ds, max_history=%d",
             self._default_backend,
             self._timeout,
+            self._max_history,
         )
 
     @staticmethod
@@ -49,6 +52,13 @@ class QueryRouter:
         except FileNotFoundError:
             log.warning("System prompt not found: %s", path)
             return ""
+
+    @staticmethod
+    def _coerce_max_history(value: object) -> int:
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 5
 
     # Ordered fallback chains per backend.
     _FALLBACK_ORDER: dict[str, list[str]] = {
@@ -91,6 +101,56 @@ class QueryRouter:
 
         return command
 
+    def _history_messages(self) -> list[dict[str, str]]:
+        if self._max_history <= 0:
+            return []
+        return self._history[-(self._max_history * 2) :]
+
+    def _chat_messages(
+        self, user_text: str, system_prompt: str
+    ) -> list[dict[str, str]]:
+        messages: list[dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.extend(self._history_messages())
+        messages.append({"role": "user", "content": user_text})
+        return messages
+
+    def _conversation_messages(self, user_text: str) -> list[dict[str, str]]:
+        messages = self._history_messages()
+        messages.append({"role": "user", "content": user_text})
+        return messages
+
+    def _prompt_with_history(self, user_text: str, system_prompt: str) -> str:
+        history_lines: list[str] = []
+        for message in self._history_messages():
+            role = message.get("role", "user").capitalize()
+            content = message.get("content", "").strip()
+            if content:
+                history_lines.append(f"{role}: {content}")
+
+        if history_lines:
+            history_block = "\n".join(history_lines)
+            return (
+                f"{system_prompt}\n\n---\n\nConversation history:\n{history_block}"
+                f"\n\nUser: {user_text}"
+            )
+
+        return f"{system_prompt}\n\n---\n\nUser: {user_text}"
+
+    def _record_history(self, user_text: str, response_text: str) -> None:
+        if self._max_history <= 0:
+            self._history.clear()
+            return
+
+        self._history.extend(
+            [
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": response_text},
+            ]
+        )
+        self._history = self._history[-(self._max_history * 2) :]
+
     def query(self, user_text: str, backend: str | None = None) -> QueryResult:
         """Send a query to the specified backend with automatic fallback."""
         if backend is None:
@@ -108,6 +168,7 @@ class QueryRouter:
             latency = (time.time() - start) * 1000
 
             if result.ok:
+                self._record_history(user_text, result.text)
                 return QueryResult(
                     ok=True,
                     text=result.text,
@@ -191,7 +252,7 @@ class QueryRouter:
 
     def _query_claude_p(self, user_text: str) -> QueryResult:
         """Query via claude -p subprocess."""
-        prompt = f"{self._system_prompt}\n\n---\n\nUser: {user_text}"
+        prompt = self._prompt_with_history(user_text, self._system_prompt)
         backends_cfg = self._config.get("backends", {}).get("claude-p", {})
         command = self._resolve_command(backends_cfg.get("command", "claude"))
         args = self._normalize_claude_p_args(backends_cfg.get("args", ["-p"]))
@@ -242,10 +303,7 @@ class QueryRouter:
 
         payload = json.dumps(
             {
-                "messages": [
-                    {"role": "system", "content": self._system_prompt_local},
-                    {"role": "user", "content": user_text},
-                ],
+                "messages": self._chat_messages(user_text, self._system_prompt_local),
                 "temperature": 0.7,
                 "max_tokens": 512,
             }
@@ -299,7 +357,7 @@ class QueryRouter:
 
     def _query_opencode(self, user_text: str) -> QueryResult:
         """Query OpenCode via non-interactive JSON event stream."""
-        prompt = f"{self._system_prompt}\n\n---\n\nUser: {user_text}"
+        prompt = self._prompt_with_history(user_text, self._system_prompt)
         backend_cfg = self._get_backend_config("opencode")
         command = self._resolve_command(backend_cfg.get("command", "opencode"))
         args = backend_cfg.get("args", ["run", "--format", "json"])
@@ -423,10 +481,7 @@ class QueryRouter:
             client = OpenAI(api_key=api_key)
             response = client.chat.completions.create(
                 model=model,
-                messages=[
-                    {"role": "system", "content": self._system_prompt},
-                    {"role": "user", "content": user_text},
-                ],
+                messages=self._chat_messages(user_text, self._system_prompt),
                 timeout=self._timeout,
             )
             text = response.choices[0].message.content or ""
@@ -457,7 +512,7 @@ class QueryRouter:
                 model=model,
                 max_tokens=512,
                 system=self._system_prompt,
-                messages=[{"role": "user", "content": user_text}],
+                messages=self._conversation_messages(user_text),
                 timeout=self._timeout,
             )
             text = self._extract_text_content(getattr(response, "content", []))
@@ -484,7 +539,7 @@ class QueryRouter:
 
         backend_cfg = self._get_backend_config("gemini")
         model = backend_cfg.get("model", "gemini-2.5-pro")
-        prompt = f"{self._system_prompt}\n\n---\n\nUser: {user_text}"
+        prompt = self._prompt_with_history(user_text, self._system_prompt)
 
         try:
             client = genai.Client(api_key=api_key)
