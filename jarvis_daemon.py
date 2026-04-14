@@ -150,9 +150,7 @@ class JarvisDaemon:
         self.state.activate()
         self.ui.send_command(UICommand("show"))
         self._speak_with_ui_feedback("Si, te escucho", "es")
-        self.ui.send_command(UICommand("set_state", "listening"))
-        # Reset audio activity timer so silence timeout starts AFTER greeting
-        self.state.record_audio_activity()
+        self._enter_active_listening("wake-greeting")
 
     def _handle_segment(self, event: SegmentEvent) -> None:
         """Handle a speech segment: STT → enrich → route → TTS.
@@ -210,7 +208,7 @@ class JarvisDaemon:
                 "Lo siento, hubo un error procesando tu consulta.",
                 language or "es",
             )
-            self.ui.send_command(UICommand("set_state", "listening"))
+            self._enter_active_listening("query-error")
             return
 
         log.info(
@@ -235,7 +233,13 @@ class JarvisDaemon:
         )
 
         # 6. Back to listening ──────────────────────────────────────────
+        self._enter_active_listening("response-complete")
+
+    def _enter_active_listening(self, reason: str) -> None:
+        """Return to active listening after TTS without requiring wake word."""
+        self.audio.clear_mute_window()
         self.state.record_audio_activity()
+        log.info("[JarvisDaemon] TTS complete, entering active listening (%s)", reason)
         self.ui.send_command(UICommand("set_state", "listening"))
 
     # ------------------------------------------------------------------
