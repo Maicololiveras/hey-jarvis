@@ -31,36 +31,11 @@ class QueryRouter:
         self._default_backend = config.get("default_backend", "claude-p")
         self._timeout = config.get("timeout_seconds", 60)
         self._lock = threading.Lock()
-        self._conversation_history: list[dict[str, str]] = []
-        self._max_history = config.get("max_history", 5)
         log.info(
-            "[QueryRouter] Initialized — default=%s, timeout=%ds, max_history=%d",
+            "[QueryRouter] Initialized — default=%s, timeout=%ds",
             self._default_backend,
             self._timeout,
-            self._max_history,
         )
-
-    def add_exchange(self, user: str, assistant: str) -> None:
-        """Add an exchange to the conversation history."""
-        with self._lock:
-            self._conversation_history.append({"role": "user", "content": user})
-            self._conversation_history.append(
-                {"role": "assistant", "content": assistant}
-            )
-            if len(self._conversation_history) > self._max_history * 2:
-                self._conversation_history = self._conversation_history[
-                    -self._max_history * 2 :
-                ]
-
-    def clear_history(self) -> None:
-        """Clear conversation history."""
-        with self._lock:
-            self._conversation_history.clear()
-
-    def get_history(self) -> list[dict[str, str]]:
-        """Return a copy of the conversation history."""
-        with self._lock:
-            return list(self._conversation_history)
 
     @staticmethod
     def _load_prompt(path: Path) -> str:
@@ -121,18 +96,13 @@ class QueryRouter:
             "[QueryRouter] Querying backend=%s, text=%s...", backend, user_text[:80]
         )
 
-        # Build full prompt with conversation history
-        full_text = self._build_prompt(user_text)
-
         last_result: QueryResult | None = None
         for attempt_backend in chain:
             start = time.time()
-            result = self._dispatch(attempt_backend, full_text)
+            result = self._dispatch(attempt_backend, user_text)
             latency = (time.time() - start) * 1000
 
             if result.ok:
-                # Add successful exchange to history
-                self.add_exchange(user_text, result.text)
                 return QueryResult(
                     ok=True,
                     text=result.text,
@@ -161,44 +131,6 @@ class QueryRouter:
 
         # All backends exhausted — return the last error.
         return last_result  # type: ignore[return-value]
-
-    def _build_prompt(self, user_text: str) -> str:
-        """Build full prompt with conversation history for multi-turn."""
-        with self._lock:
-            history = list(self._conversation_history)
-
-        if not history:
-            return user_text
-
-        history_text = "\n".join(
-            f"{msg['role'].capitalize()}: {msg['content']}" for msg in history
-        )
-        return f"{history_text}\n\nUsuario: {user_text}"
-
-    @staticmethod
-    def _normalize_claude_p_args(args: object) -> list[str]:
-        """Force low-cost Claude CLI flags even with old user config overrides."""
-        normalized = [str(arg) for arg in args] if isinstance(args, list) else ["-p"]
-        if "-p" not in normalized:
-            normalized.insert(0, "-p")
-
-        cleaned: list[str] = []
-        skip_next = False
-        for index, arg in enumerate(normalized):
-            if skip_next:
-                skip_next = False
-                continue
-            if arg == "--model":
-                skip_next = True
-                continue
-            if arg == "haiku" and index > 0 and normalized[index - 1] == "--model":
-                continue
-            if arg in {"--bare", "--no-session-persistence"}:
-                continue
-            cleaned.append(arg)
-
-        cleaned.extend(["--bare", "--model", "haiku", "--no-session-persistence"])
-        return cleaned
 
     def get_default_backend(self) -> str:
         with self._lock:
@@ -234,7 +166,7 @@ class QueryRouter:
         prompt = f"{self._system_prompt}\n\n---\n\nUser: {user_text}"
         backends_cfg = self._config.get("backends", {}).get("claude-p", {})
         command = self._resolve_command(backends_cfg.get("command", "claude"))
-        args = self._normalize_claude_p_args(backends_cfg.get("args", ["-p"]))
+        args = backends_cfg.get("args", ["-p"])
 
         try:
             result = subprocess.run(
@@ -281,7 +213,7 @@ class QueryRouter:
                     {"role": "user", "content": user_text},
                 ],
                 "temperature": 0.7,
-                "max_tokens": 512,
+                "max_tokens": 2048,
             }
         ).encode("utf-8")
 
@@ -482,13 +414,14 @@ class QueryRouter:
                 ok=False, error="Anthropic SDK not installed; add package 'anthropic'"
             )
 
-        model = "claude-haiku-4-5"
+        backend_cfg = self._get_backend_config("claude-api")
+        model = backend_cfg.get("model", "claude-sonnet-4-6")
 
         try:
             client = Anthropic(api_key=api_key)
             response = client.messages.create(
                 model=model,
-                max_tokens=512,
+                max_tokens=2048,
                 system=self._system_prompt,
                 messages=[{"role": "user", "content": user_text}],
                 timeout=self._timeout,

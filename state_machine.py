@@ -1,11 +1,9 @@
 """Two-state state machine for Jarvis daemon."""
-
 from __future__ import annotations
 
 import logging
 import time
 from enum import Enum
-from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -13,9 +11,6 @@ log = logging.getLogger(__name__)
 class State(Enum):
     DORMIDO = "DORMIDO"
     ACTIVO = "ACTIVO"
-    LISTENING = "LISTENING"
-    PROCESSING = "PROCESSING"
-    SPEAKING = "SPEAKING"
 
 
 class StateMachine:
@@ -23,18 +18,10 @@ class StateMachine:
 
     def __init__(self, silence_timeout: float = 5.0) -> None:
         self._state = State.DORMIDO
-        self._sub_state: State | None = None
         self._state_entered_at = time.time()
         self._last_audio_time = time.time()
         self._silence_timeout = silence_timeout
-        self._conversation_turns = 0
-        self._last_user_text: str | None = None
-        self._last_response: str | None = None
-        log.info(
-            "[Jarvis] StateMachine initialized — state=%s, timeout=%.1fs",
-            self._state.value,
-            silence_timeout,
-        )
+        log.info("[Jarvis] StateMachine initialized — state=%s, timeout=%.1fs", self._state.value, silence_timeout)
 
     @property
     def state(self) -> State:
@@ -51,26 +38,6 @@ class StateMachine:
     @property
     def is_activo(self) -> bool:
         return self._state is State.ACTIVO
-
-    @property
-    def sub_state(self) -> State | None:
-        return self._sub_state
-
-    @property
-    def conversation_turns(self) -> int:
-        return self._conversation_turns
-
-    @property
-    def last_user_text(self) -> str | None:
-        return self._last_user_text
-
-    @property
-    def last_response(self) -> str | None:
-        return self._last_response
-
-    @property
-    def is_multi_turn(self) -> bool:
-        return self._conversation_turns > 0
 
     def activate(self) -> bool:
         """Transition DORMIDO -> ACTIVO. Returns True if transition was valid."""
@@ -97,32 +64,6 @@ class StateMachine:
         """Call this when speech is detected to reset silence timer."""
         self._last_audio_time = time.time()
 
-    def set_sub_state(self, sub_state: State) -> None:
-        """Set a sub-state (LISTENING, PROCESSING, SPEAKING)."""
-        self._sub_state = sub_state
-        log.debug("[Jarvis] Sub-state set to %s", sub_state.value)
-
-    def clear_sub_state(self) -> None:
-        """Clear the sub-state."""
-        self._sub_state = None
-
-    def increment_turn(self) -> int:
-        """Increment conversation turn counter and return new value."""
-        self._conversation_turns += 1
-        log.debug("[Jarvis] Conversation turn: %d", self._conversation_turns)
-        return self._conversation_turns
-
-    def set_context(self, user_text: str | None, response: str | None) -> None:
-        """Store conversation context for multi-turn detection."""
-        self._last_user_text = user_text
-        self._last_response = response
-
-    def clear_context(self) -> None:
-        """Clear conversation context."""
-        self._last_user_text = None
-        self._last_response = None
-        self._conversation_turns = 0
-
     def check_silence_timeout(self, tts_playing: bool = False) -> bool:
         """Check if silence timeout has been exceeded.
 
@@ -137,10 +78,6 @@ class StateMachine:
             return False
         elapsed = time.time() - self._last_audio_time
         if elapsed >= self._silence_timeout:
-            log.info(
-                "[Jarvis] Silence timeout reached (%.1fs >= %.1fs)",
-                elapsed,
-                self._silence_timeout,
-            )
+            log.info("[Jarvis] Silence timeout reached (%.1fs >= %.1fs)", elapsed, self._silence_timeout)
             return True
         return False
