@@ -42,6 +42,7 @@ _SPANISH_WORDS = re.compile(
 # Language detection
 # ---------------------------------------------------------------------------
 
+
 def detect_language(text: str) -> str:
     """Detect language from *text* using simple heuristics.
 
@@ -69,6 +70,7 @@ def detect_language(text: str) -> str:
 # ffplay resolver (same logic as speak.py)
 # ---------------------------------------------------------------------------
 
+
 def _resolve_ffplay() -> str:
     """Return path to *ffplay* binary, searching PATH and WinGet installs."""
     path = shutil.which("ffplay")
@@ -85,6 +87,40 @@ def _resolve_ffplay() -> str:
         return candidates[0]
 
     return "ffplay"  # fallback — let the OS resolve it or fail loudly
+
+
+def _resolve_playback_binary(playback: Optional[str]) -> str:
+    """Return the configured playback binary, preserving ffplay lookup."""
+    player = (playback or "ffplay").strip()
+    if not player or player.lower() == "ffplay":
+        return _resolve_ffplay()
+    return player
+
+
+def _normalize_edge_rate(rate: object) -> Optional[str]:
+    """Return an edge-tts compatible rate string like '+5%'."""
+    if not isinstance(rate, str):
+        return None
+
+    value = rate.strip()
+    if not value:
+        return None
+
+    if re.fullmatch(r"[+-]?\d+%", value):
+        return value if value[0] in "+-" else f"+{value}"
+
+    logger.warning("Invalid TTS rate %r; expected formats like '+5%%' or '-10%%'", rate)
+    return None
+
+
+def _rate_percent_to_multiplier(rate: object) -> Optional[float]:
+    """Convert config rate like '+5%' into a numeric multiplier."""
+    normalized = _normalize_edge_rate(rate)
+    if normalized is None:
+        return None
+
+    percent = int(normalized[:-1])
+    return max(0.1, 1.0 + (percent / 100.0))
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +145,7 @@ def get_last_speech_end_time() -> float:
 # Voice selection
 # ---------------------------------------------------------------------------
 
+
 def _pick_voice(language: str, cfg: dict) -> str:
     """Return the configured voice name for *language*."""
     if language == "es":
@@ -120,19 +157,22 @@ def _pick_voice(language: str, cfg: dict) -> str:
 # Core TTS — online (edge-tts) and offline (pyttsx3)
 # ---------------------------------------------------------------------------
 
-async def _speak_online(text: str, voice: str) -> None:
+
+async def _speak_online(text: str, voice: str, cfg: dict) -> None:
     """Synthesise *text* with edge-tts and play via ffplay."""
     import edge_tts  # lazy — optional dep
 
     output = tempfile.mktemp(suffix=".mp3")
-    communicate = edge_tts.Communicate(text, voice)
+    rate = _normalize_edge_rate(cfg.get("rate"))
+    communicate_kwargs = {"rate": rate} if rate else {}
+    communicate = edge_tts.Communicate(text, voice, **communicate_kwargs)
     await communicate.save(output)
 
-    ffplay = _resolve_ffplay()
-    logger.debug("Playing TTS via %s -> %s", ffplay, output)
+    playback = _resolve_playback_binary(cfg.get("playback"))
+    logger.debug("Playing TTS via %s -> %s", playback, output)
 
     proc = subprocess.Popen(
-        [ffplay, "-nodisp", "-autoexit", "-loglevel", "quiet", output],
+        [playback, "-nodisp", "-autoexit", "-loglevel", "quiet", output],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=_CREATE_NO_WINDOW,
@@ -140,7 +180,7 @@ async def _speak_online(text: str, voice: str) -> None:
     proc.wait()  # block until playback finishes so _speaking stays accurate
 
 
-def _speak_offline(text: str, language: str) -> None:
+def _speak_offline(text: str, language: str, cfg: dict) -> None:
     """Fallback TTS using pyttsx3 (Windows SAPI5)."""
     import pyttsx3  # lazy — optional dep
 
@@ -153,7 +193,12 @@ def _speak_offline(text: str, language: str) -> None:
             engine.setProperty("voice", v.id)
             break
 
-    engine.setProperty("rate", 180)
+    multiplier = _rate_percent_to_multiplier(cfg.get("rate"))
+    if multiplier is not None:
+        current_rate = engine.getProperty("rate")
+        if isinstance(current_rate, (int, float)):
+            engine.setProperty("rate", max(50, int(current_rate * multiplier)))
+
     engine.say(text)
     engine.runAndWait()
 
@@ -161,6 +206,7 @@ def _speak_offline(text: str, language: str) -> None:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def speak(text: str, language: Optional[str] = None) -> float:
     """Speak *text* and return estimated duration in seconds.
@@ -201,12 +247,12 @@ def speak(text: str, language: Optional[str] = None) -> float:
 
     _speaking = True
     try:
-        asyncio.run(_speak_online(text, voice))
+        asyncio.run(_speak_online(text, voice, cfg))
     except Exception:
         logger.warning("edge-tts failed, attempting offline fallback", exc_info=True)
         if offline_fallback:
             try:
-                _speak_offline(text, lang)
+                _speak_offline(text, lang, cfg)
             except Exception:
                 logger.error("Offline TTS also failed", exc_info=True)
         else:
