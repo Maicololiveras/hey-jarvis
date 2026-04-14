@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 
 SYSTEM_PROMPT_FILE = Path(__file__).parent / "system_prompt.txt"
 SYSTEM_PROMPT_LOCAL_FILE = Path(__file__).parent / "system_prompt_local.txt"
+DEFAULT_CLAUDE_P_ARGS = ["-p", "--bare", "--model", "haiku", "--no-session-persistence"]
 
 
 class QueryRouter:
@@ -134,26 +135,17 @@ class QueryRouter:
 
     @staticmethod
     def _normalize_claude_p_args(args: object) -> list[str]:
-        """Force low-cost Claude CLI flags even when user config is outdated."""
-        normalized = [str(arg) for arg in args] if isinstance(args, list) else ["-p"]
+        """Normalize Claude CLI args while respecting runtime config."""
+        normalized = (
+            [str(arg) for arg in args if str(arg).strip()]
+            if isinstance(args, list)
+            else DEFAULT_CLAUDE_P_ARGS.copy()
+        )
+        if not normalized:
+            normalized = DEFAULT_CLAUDE_P_ARGS.copy()
         if "-p" not in normalized:
             normalized.insert(0, "-p")
-
-        cleaned: list[str] = []
-        skip_next = False
-        for arg in normalized:
-            if skip_next:
-                skip_next = False
-                continue
-            if arg == "--model":
-                skip_next = True
-                continue
-            if arg in {"--bare", "--no-session-persistence"}:
-                continue
-            cleaned.append(arg)
-
-        cleaned.extend(["--bare", "--model", "haiku", "--no-session-persistence"])
-        return cleaned
+        return normalized
 
     def get_default_backend(self) -> str:
         with self._lock:
