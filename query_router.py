@@ -132,6 +132,29 @@ class QueryRouter:
         # All backends exhausted — return the last error.
         return last_result  # type: ignore[return-value]
 
+    @staticmethod
+    def _normalize_claude_p_args(args: object) -> list[str]:
+        """Force low-cost Claude CLI flags even when user config is outdated."""
+        normalized = [str(arg) for arg in args] if isinstance(args, list) else ["-p"]
+        if "-p" not in normalized:
+            normalized.insert(0, "-p")
+
+        cleaned: list[str] = []
+        skip_next = False
+        for arg in normalized:
+            if skip_next:
+                skip_next = False
+                continue
+            if arg == "--model":
+                skip_next = True
+                continue
+            if arg in {"--bare", "--no-session-persistence"}:
+                continue
+            cleaned.append(arg)
+
+        cleaned.extend(["--bare", "--model", "haiku", "--no-session-persistence"])
+        return cleaned
+
     def get_default_backend(self) -> str:
         with self._lock:
             return self._default_backend
@@ -166,7 +189,7 @@ class QueryRouter:
         prompt = f"{self._system_prompt}\n\n---\n\nUser: {user_text}"
         backends_cfg = self._config.get("backends", {}).get("claude-p", {})
         command = self._resolve_command(backends_cfg.get("command", "claude"))
-        args = backends_cfg.get("args", ["-p"])
+        args = self._normalize_claude_p_args(backends_cfg.get("args", ["-p"]))
 
         try:
             result = subprocess.run(
@@ -213,7 +236,7 @@ class QueryRouter:
                     {"role": "user", "content": user_text},
                 ],
                 "temperature": 0.7,
-                "max_tokens": 2048,
+                "max_tokens": 512,
             }
         ).encode("utf-8")
 
@@ -421,7 +444,7 @@ class QueryRouter:
             client = Anthropic(api_key=api_key)
             response = client.messages.create(
                 model=model,
-                max_tokens=2048,
+                max_tokens=512,
                 system=self._system_prompt,
                 messages=[{"role": "user", "content": user_text}],
                 timeout=self._timeout,

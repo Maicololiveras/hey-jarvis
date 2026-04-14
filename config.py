@@ -41,10 +41,11 @@ Format (version 2):
     query:
       default_backend: "claude-api"
       timeout_seconds: 60
+      max_history: 5
       backends:
         claude-p:
           command: "claude"
-          args: ["-p"]
+          args: ["-p", "--bare", "--model", "haiku", "--no-session-persistence"]
         claude-api:
           model: "claude-sonnet-4-6"
           api_key_env: "ANTHROPIC_API_KEY"
@@ -139,10 +140,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "query": {
         "default_backend": "claude-api",
         "timeout_seconds": 60,
+        "max_history": 5,
         "backends": {
             "claude-p": {
                 "command": "claude",
-                "args": ["-p"],
+                "args": [
+                    "-p",
+                    "--bare",
+                    "--model",
+                    "haiku",
+                    "--no-session-persistence",
+                ],
             },
             "claude-api": {
                 "model": "claude-sonnet-4-6",

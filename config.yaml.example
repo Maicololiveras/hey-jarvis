@@ -58,12 +58,17 @@ tts:
 query:
   default_backend: "claude-api"    # "claude-p" | "claude-api" | "openai" | "gemini" | "local-qwen"
   timeout_seconds: 60              # Timeout for query responses
+  max_history: 5                   # Reserved for short conversation windows
 
   backends:
     claude-p:
       command: "claude"            # CLI command to run
       args:
         - "-p"                     # Arguments passed to the command
+        - "--bare"
+        - "--model"
+        - "haiku"
+        - "--no-session-persistence"
 
     claude-api:
       model: "claude-sonnet-4-6"   # Anthropic model name
