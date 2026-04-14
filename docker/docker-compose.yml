@@ -1,0 +1,83 @@
+version: "3.9"
+
+services:
+  # ─── Jarvis Backend: STT + QueryRouter + TTS ───────────────────────
+  jarvis-backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: jarvis-backend
+    restart: always
+    ports:
+      - "${BACKEND_PORT:-50052}:50052"
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - MAIX_ENGINE_HOST=maix-engine
+      - MAIX_ENGINE_PORT=50051
+      - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE:-base}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    networks:
+      - jarvis-net
+    depends_on:
+      maix-engine:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import grpc; ch=grpc.insecure_channel('localhost:50052'); grpc.channel_ready_future(ch).result(timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  # ─── Maix AI Engine: Local LLM Inference ───────────────────────────
+  maix-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile.maix-engine
+      args:
+        CMAKE_ARGS: "${CMAKE_ARGS:-}"
+    container_name: maix-engine
+    restart: always
+    ports:
+      - "${MAIX_PORT:-50051}:50051"
+    environment:
+      - MODEL_PATH=/models/${MAIX_MODEL_FILE:-model.gguf}
+      - N_GPU_LAYERS=${N_GPU_LAYERS:-0}
+      - N_CTX=${N_CTX:-4096}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ${MAIX_MODELS_DIR:-./models}:/models:ro
+      - ${MAIX_CONFIG:-./config.yaml}:/app/config.yaml:ro
+    networks:
+      - jarvis-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import grpc; ch=grpc.insecure_channel('localhost:50051'); grpc.channel_ready_future(ch).result(timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+
+networks:
+  jarvis-net:
+    driver: bridge
+    name: jarvis-net

@@ -1,0 +1,52 @@
+# =============================================================================
+# Maix AI Engine — Local LLM inference via llama-cpp-python + gRPC
+# =============================================================================
+FROM python:3.12-slim AS base
+
+LABEL maintainer="praxisgenai"
+LABEL description="Maix AI Engine: local GGUF model inference with gRPC interface"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    LANG=C.UTF-8
+
+# Build dependencies for llama-cpp-python (CPU build)
+# For CUDA: use nvidia/cuda base image and set CMAKE_ARGS=-DGGML_CUDA=on
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -r maix && useradd -r -g maix -m maix
+
+WORKDIR /app
+
+# Install Python dependencies
+COPY requirements-maix.txt /app/requirements-maix.txt
+
+# CPU build by default. Override with build-arg for CUDA:
+#   docker build --build-arg CMAKE_ARGS="-DGGML_CUDA=on" ...
+ARG CMAKE_ARGS=""
+ENV CMAKE_ARGS=${CMAKE_ARGS}
+
+RUN pip install --no-cache-dir -r /app/requirements-maix.txt
+
+# Copy engine source
+COPY maix_ai_engine/ /app/maix_ai_engine/
+
+# Config file (can be overridden by volume mount)
+COPY config.yaml /app/config.yaml
+
+# Model directory (mounted as volume at runtime)
+RUN mkdir -p /models && chown maix:maix /models
+
+USER maix
+
+EXPOSE 50051
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD python -c "import grpc; ch=grpc.insecure_channel('localhost:50051'); grpc.channel_ready_future(ch).result(timeout=5)" || exit 1
+
+CMD ["python", "-m", "maix_ai_engine.main"]

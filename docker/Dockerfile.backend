@@ -1,0 +1,58 @@
+# =============================================================================
+# Jarvis Backend — STT + QueryRouter + TTS (no GUI, no audio playback)
+# =============================================================================
+FROM python:3.12-slim AS base
+
+LABEL maintainer="praxisgenai"
+LABEL description="Jarvis backend: STT (faster-whisper), QueryRouter, TTS (edge-tts + PyAV)"
+
+# Prevent interactive prompts and set locale
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    LANG=C.UTF-8
+
+# System dependencies for PyAV, sounddevice (headers only), and faster-whisper
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ffmpeg \
+    libavcodec-dev \
+    libavformat-dev \
+    libavutil-dev \
+    libswresample-dev \
+    libsndfile1 \
+    portaudio19-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -r jarvis && useradd -r -g jarvis -m jarvis
+
+WORKDIR /app
+
+# Install Python dependencies (layer cached separately from code)
+COPY requirements-backend.txt /app/requirements-backend.txt
+RUN pip install --no-cache-dir -r /app/requirements-backend.txt
+
+# Copy only backend-relevant modules
+COPY jarvis/__init__.py /app/jarvis/__init__.py
+COPY jarvis/stt.py /app/jarvis/stt.py
+COPY jarvis/query_router.py /app/jarvis/query_router.py
+COPY jarvis/tts.py /app/jarvis/tts.py
+COPY jarvis/config.py /app/jarvis/config.py
+COPY jarvis/models.py /app/jarvis/models.py
+COPY jarvis/engram_bridge.py /app/jarvis/engram_bridge.py
+COPY jarvis/local_model.py /app/jarvis/local_model.py
+COPY jarvis/backend_server.py /app/jarvis/backend_server.py
+
+# Faster-whisper model cache
+ENV WHISPER_CACHE_DIR=/app/.cache/whisper
+RUN mkdir -p ${WHISPER_CACHE_DIR} && chown -R jarvis:jarvis /app
+
+USER jarvis
+
+EXPOSE 50052
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD python -c "import grpc; ch=grpc.insecure_channel('localhost:50052'); grpc.channel_ready_future(ch).result(timeout=5)" || exit 1
+
+CMD ["python", "-m", "jarvis.backend_server"]
