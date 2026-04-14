@@ -146,8 +146,7 @@ class STT:
                 wf.writeframes(pcm.tobytes())
 
             t0 = time.time()
-            segments, info = model.transcribe(
-                tmp,
+            transcribe_kwargs: dict = dict(
                 beam_size=5,
                 vad_filter=False,  # Silero handles VAD externally
                 temperature=0.0,
@@ -158,6 +157,12 @@ class STT:
                 compression_ratio_threshold=3.0,
                 log_prob_threshold=-2.5,
             )
+            if self._language and self._language != "auto":
+                transcribe_kwargs["language"] = self._language
+            else:
+                # Default to Spanish to avoid misdetection on short segments
+                transcribe_kwargs["language"] = "es"
+            segments, info = model.transcribe(tmp, **transcribe_kwargs)
             text = " ".join(seg.text.strip() for seg in segments)
             detected_lang = getattr(info, "language", "")
             elapsed = time.time() - t0
