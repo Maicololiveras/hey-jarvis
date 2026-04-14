@@ -137,7 +137,9 @@ class JarvisDaemon:
         This runs continuously so queries are processed even while TTS
         is playing on the main thread.
         """
-        log.info("[Worker] Query worker thread started")
+        log.info(
+            "[Worker] Query worker thread started (session=%s)", self.state.session_id
+        )
         while not self._worker_stop.is_set():
             try:
                 event = self._query_queue.get(timeout=0.2)
@@ -145,22 +147,36 @@ class JarvisDaemon:
                 continue
 
             try:
+                session_id = self.state.session_id
                 log.info(
-                    "[Worker] Processing query (%.1fs audio)",
+                    "[Worker] Processing query (session=%s, %.1fs audio)",
+                    session_id,
                     event.duration_seconds,
                 )
 
                 # 1. STT — fast transcribe
                 fast_text, language = self.stt.transcribe(event.audio, fast=True)
                 if not fast_text or not fast_text.strip():
-                    log.debug("[Worker] Empty transcription (fast), skipping")
+                    log.debug(
+                        "[Worker] Empty transcription (fast), skipping (session=%s)",
+                        session_id,
+                    )
                     continue
 
-                log.info("[Worker] Fast transcribe (%s): %s", language, fast_text[:100])
+                log.info(
+                    "[Worker] Fast transcribe (session=%s, %s): %s",
+                    session_id,
+                    language,
+                    fast_text[:100],
+                )
 
                 # Voice command: "Jarvis dormido" → finish queue then sleep
                 if self._is_sleep_command(fast_text):
-                    log.info("[Worker] Sleep command detected: %r", fast_text)
+                    log.info(
+                        "[Worker] Sleep command detected (session=%s): %r",
+                        session_id,
+                        fast_text,
+                    )
                     self._response_queue.put(
                         (
                             fast_text,
@@ -177,7 +193,10 @@ class JarvisDaemon:
                     if not text or not text.strip():
                         text = fast_text
                     log.info(
-                        "[Worker] Precise transcribe (%s): %s", language, text[:100]
+                        "[Worker] Precise transcribe (session=%s, %s): %s",
+                        session_id,
+                        language,
+                        text[:100],
                     )
 
                 # 2. Enrich with Engram context
@@ -189,7 +208,11 @@ class JarvisDaemon:
                 result = self.router.query(enriched_prompt)
 
                 if not result.ok:
-                    log.error("[Worker] Query failed: %s", result.error)
+                    log.error(
+                        "[Worker] Query failed (session=%s): %s",
+                        session_id,
+                        result.error,
+                    )
                     self._response_queue.put(
                         (
                             text,
@@ -200,7 +223,8 @@ class JarvisDaemon:
                     )
                 else:
                     log.info(
-                        "[Worker] Response ready from %s (%.0fms): %s...",
+                        "[Worker] Response ready (session=%s, backend=%s, %.0fms): %s...",
+                        session_id,
                         result.backend,
                         result.latency_ms,
                         result.text[:100],
@@ -215,9 +239,14 @@ class JarvisDaemon:
                     )
 
             except Exception:
-                log.exception("[Worker] Unhandled exception processing query")
+                log.exception(
+                    "[Worker] Unhandled exception processing query (session=%s)",
+                    self.state.session_id,
+                )
 
-        log.info("[Worker] Query worker thread stopped")
+        log.info(
+            "[Worker] Query worker thread stopped (session=%s)", self.state.session_id
+        )
 
     # ------------------------------------------------------------------
     # Main loop
@@ -279,13 +308,22 @@ class JarvisDaemon:
     def _handle_wake(self, event: WakeEvent) -> None:
         """Handle wake word detection → transition to ACTIVO."""
         if not self.state.is_dormido:
+            log.info(
+                "[JarvisDaemon] Duplicate wake ignored (session=%s)",
+                self.state.session_id,
+            )
             return
 
         log.info(
-            "[JarvisDaemon] Wake word detected (score=%.3f)",
+            "[JarvisDaemon] Wake word detected (score=%.3f, session=%s)",
             event.score,
+            self.state.session_id,
         )
         self.state.activate()
+        log.info(
+            "[JarvisDaemon] Wake session started (session=%s)",
+            self.state.session_id,
+        )
         self.ui.send_command(UICommand("show"))
         self._speak_with_ui_feedback("Si, te escucho", "es")
         self._enter_active_listening("wake-greeting")
@@ -308,8 +346,9 @@ class JarvisDaemon:
 
         label = "background" if event.background else "foreground"
         log.info(
-            "[JarvisDaemon] Enqueueing %s segment (%.1fs audio, queue=%d)",
+            "[JarvisDaemon] Enqueueing %s segment (session=%s, %.1fs audio, queue=%d)",
             label,
+            self.state.session_id,
             event.duration_seconds,
             self._query_queue.qsize(),
         )
@@ -321,7 +360,8 @@ class JarvisDaemon:
                 self._query_queue.get_nowait()
                 self._query_queue.put_nowait(event)
                 log.warning(
-                    "[JarvisDaemon] Queue full — dropped oldest, enqueued new segment"
+                    "[JarvisDaemon] Queue full — dropped oldest, enqueued new segment (session=%s)",
+                    self.state.session_id,
                 )
             except queue.Empty:
                 pass
@@ -345,7 +385,8 @@ class JarvisDaemon:
             # Handle sleep command: finish remaining responses then deactivate
             if response_text == "__SLEEP__":
                 log.info(
-                    "[JarvisDaemon] Sleep command: draining remaining responses then sleeping"
+                    "[JarvisDaemon] Sleep command: draining remaining responses then sleeping (session=%s)",
+                    self.state.session_id,
                 )
                 # Drain any remaining responses first
                 while not self._response_queue.empty():
@@ -361,7 +402,8 @@ class JarvisDaemon:
 
             played = True
             log.info(
-                "[TTS] Playing queued response (%s): %s...",
+                "[TTS] Playing queued response (session=%s, %s): %s...",
+                self.state.session_id,
                 backend,
                 response_text[:80],
             )
@@ -403,7 +445,11 @@ class JarvisDaemon:
         """Return to active listening after TTS without requiring wake word."""
         self.audio.clear_mute_window()
         self.state.record_audio_activity()
-        log.info("[JarvisDaemon] TTS complete, entering active listening (%s)", reason)
+        log.info(
+            "[JarvisDaemon] TTS complete, entering active listening (session=%s, %s)",
+            self.state.session_id,
+            reason,
+        )
         self.ui.send_command(UICommand("set_state", "listening"))
 
     # ------------------------------------------------------------------
@@ -448,11 +494,19 @@ class JarvisDaemon:
 
     def _speak_with_ui_feedback(self, text: str, language: str | None) -> float:
         """Run blocking TTS on a worker thread while keeping UI animation alive."""
+        session_id = self.state.session_id
         self.ui.send_command(UICommand("set_state", "speaking"))
+        log.info(
+            "[TTS] Starting playback (session=%s, language=%s): %s...",
+            session_id,
+            language,
+            text[:80],
+        )
 
         result: dict[str, float] = {"duration": 0.0}
 
         def _run_tts() -> None:
+            log.debug("[TTS] Worker thread speaking (session=%s)", session_id)
             result["duration"] = tts_module.speak(text, language)
 
         # Keep the microphone muted for the real TTS playback window, not an estimate.
@@ -469,6 +523,12 @@ class JarvisDaemon:
         finally:
             self.audio.clear_mute_window()
 
+        log.info(
+            "[TTS] Playback finished (session=%s, duration=%.2fs)",
+            session_id,
+            result["duration"],
+        )
+
         return result["duration"]
 
     # ------------------------------------------------------------------
@@ -481,15 +541,18 @@ class JarvisDaemon:
         Drains any remaining responses before deactivating so no work
         is silently lost.
         """
+        session_id = self.state.session_id
         # Play any remaining queued responses before going dormant
         self._drain_response_queue()
 
         log.info(
-            "[JarvisDaemon] Deactivating — saving session with %d exchanges",
+            "[JarvisDaemon] Deactivating session=%s — saving session with %d exchanges",
+            session_id,
             len(self._exchanges),
         )
         self.router.clear_history()
         self.state.deactivate()
+        log.info("[JarvisDaemon] Session %s ended", session_id)
         self.ui.send_command(
             UICommand("update_waveform", np.zeros(48, dtype=np.float32))
         )
@@ -501,7 +564,11 @@ class JarvisDaemon:
             try:
                 self.engram.save_session_summary(self._exchanges)
             except Exception as exc:
-                log.error("[JarvisDaemon] Failed to save session: %s", exc)
+                log.error(
+                    "[JarvisDaemon] Failed to save session %s: %s",
+                    session_id,
+                    exc,
+                )
             self._exchanges.clear()
 
     # ------------------------------------------------------------------
@@ -510,13 +577,16 @@ class JarvisDaemon:
 
     def _shutdown(self) -> None:
         """Clean shutdown of all modules."""
-        log.info("[JarvisDaemon] Shutting down...")
+        log.info("[JarvisDaemon] Shutting down (session=%s)", self.state.session_id)
 
         # Stop the query worker thread
         self._worker_stop.set()
         self._worker_thread.join(timeout=3.0)
         if self._worker_thread.is_alive():
-            log.warning("[JarvisDaemon] Worker thread did not stop in time")
+            log.warning(
+                "[JarvisDaemon] Worker thread did not stop in time (session=%s)",
+                self.state.session_id,
+            )
 
         # Save any remaining exchanges before exit
         if self._exchanges:
@@ -530,4 +600,4 @@ class JarvisDaemon:
             self._local_model_server.stop()
 
         self.audio.close()
-        log.info("[JarvisDaemon] Shutdown complete")
+        log.info("[JarvisDaemon] Shutdown complete (session=%s)", self.state.session_id)
