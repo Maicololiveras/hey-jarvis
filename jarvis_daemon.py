@@ -93,11 +93,99 @@ class JarvisDaemon:
         self._exchanges: list[dict[str, Any]] = []
         self._last_activity: float = time.time()
 
-        # ── Query queue for overlapping requests ───────────────────────
+        # ── Two-stage pipeline queues ─────────────────────────────────
+        # Stage 1: raw audio segments waiting for STT + query processing
         self._query_queue: queue.Queue[SegmentEvent] = queue.Queue(maxsize=3)
         self._max_queue_size = 3
+        # Stage 2: (user_text, response_text, language, backend) ready for TTS
+        self._response_queue: queue.Queue[tuple[str, str, str | None, str]] = (
+            queue.Queue(maxsize=5)
+        )
+        # Sentinel to stop the worker thread on shutdown
+        self._worker_stop = threading.Event()
 
-        log.info("[JarvisDaemon] All modules initialized")
+        # Start the background query worker
+        self._worker_thread = threading.Thread(
+            target=self._query_worker, name="jarvis-query-worker", daemon=True,
+        )
+        self._worker_thread.start()
+
+        log.info("[JarvisDaemon] All modules initialized (pipeline worker started)")
+
+    # ------------------------------------------------------------------
+    # Background query worker (Stage 1 → Stage 2)
+    # ------------------------------------------------------------------
+
+    def _query_worker(self) -> None:
+        """Background thread: pulls SegmentEvents from _query_queue,
+        runs STT + QueryRouter, and puts results into _response_queue.
+
+        This runs continuously so queries are processed even while TTS
+        is playing on the main thread.
+        """
+        log.info("[Worker] Query worker thread started")
+        while not self._worker_stop.is_set():
+            try:
+                event = self._query_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+
+            try:
+                log.info(
+                    "[Worker] Processing query (%.1fs audio)",
+                    event.duration_seconds,
+                )
+
+                # 1. STT — fast transcribe
+                fast_text, language = self.stt.transcribe(event.audio, fast=True)
+                if not fast_text or not fast_text.strip():
+                    log.debug("[Worker] Empty transcription (fast), skipping")
+                    continue
+
+                log.info("[Worker] Fast transcribe (%s): %s", language, fast_text[:100])
+
+                # Voice command: "Jarvis dormido" → finish queue then sleep
+                if self._is_sleep_command(fast_text):
+                    log.info("[Worker] Sleep command detected: %r", fast_text)
+                    self._response_queue.put((
+                        fast_text, "__SLEEP__", language or "es", "command",
+                    ))
+                    continue
+
+                text = fast_text
+                if self._use_precise_stt:
+                    text, language = self.stt.transcribe(event.audio, fast=False)
+                    if not text or not text.strip():
+                        text = fast_text
+                    log.info("[Worker] Precise transcribe (%s): %s", language, text[:100])
+
+                # 2. Enrich with Engram context
+                enriched_prompt = self.engram.enrich_prompt(text, language=language or "es")
+
+                # 3. Query backend (blocking — this is why we run in a thread)
+                result = self.router.query(enriched_prompt)
+
+                if not result.ok:
+                    log.error("[Worker] Query failed: %s", result.error)
+                    self._response_queue.put((
+                        text,
+                        "Lo siento, hubo un error procesando tu consulta.",
+                        language or "es",
+                        "error",
+                    ))
+                else:
+                    log.info(
+                        "[Worker] Response ready from %s (%.0fms): %s...",
+                        result.backend, result.latency_ms, result.text[:100],
+                    )
+                    self._response_queue.put((
+                        text, result.text, language, result.backend,
+                    ))
+
+            except Exception:
+                log.exception("[Worker] Unhandled exception processing query")
+
+        log.info("[Worker] Query worker thread stopped")
 
     # ------------------------------------------------------------------
     # Main loop
@@ -110,14 +198,24 @@ class JarvisDaemon:
         ``WakeEvent`` and ``SegmentEvent`` objects.  Each event is
         dispatched to the appropriate handler based on type and current
         state.
+
+        Between events, the loop drains _response_queue and plays TTS
+        for any responses that the worker has prepared.
         """
         log.info("[JarvisDaemon] Starting main loop")
 
         try:
             for event in self.audio.stream_events():
+                # ── Drain response queue (play ready responses) ───────
+                if self.state.is_activo:
+                    self._drain_response_queue()
+
                 # ── Silence timeout check (only while ACTIVO) ─────────
                 if self.state.is_activo:
-                    if self.state.check_silence_timeout(
+                    both_queues_empty = (
+                        self._query_queue.empty() and self._response_queue.empty()
+                    )
+                    if both_queues_empty and self.state.check_silence_timeout(
                         tts_playing=tts_module.is_speaking(),
                     ):
                         log.info(
@@ -161,145 +259,101 @@ class JarvisDaemon:
         self._enter_active_listening("wake-greeting")
 
     def _handle_segment(self, event: SegmentEvent) -> None:
-        """Handle a speech segment: STT → enrich → route → TTS.
+        """Handle a speech segment by enqueueing it for the background worker.
 
-        Only processes segments while in ACTIVO state.  Short or empty
-        transcriptions are silently ignored.  Background segments (captured
-        during TTS playback) are transcribed and queued for later processing.
+        ALL segments (foreground and background) go through _query_queue
+        so the worker thread handles STT + query processing while the
+        main thread stays free for TTS playback and UI updates.
         """
         if not self.state.is_activo:
             return
 
-        # ── Background segment: queue raw event for later processing ──
-        if event.background:
-            log.info(
-                "[JarvisDaemon] Background segment captured during TTS, queuing (%.1fs audio)",
-                event.duration_seconds,
-            )
-            try:
-                self._query_queue.put_nowait(event)
-            except queue.Full:
-                try:
-                    self._query_queue.get_nowait()
-                    self._query_queue.put_nowait(event)
-                    log.warning(
-                        "[JarvisDaemon] Queue full — dropped oldest, queued background segment"
-                    )
-                except queue.Empty:
-                    pass
-            return
-
-        # If already processing or speaking, queue the raw event for later
-        if self._query_queue.full() or self._is_processing_or_speaking():
-            try:
-                self._query_queue.put_nowait(event)
-                log.info(
-                    "[JarvisDaemon] Query queued (%d pending)",
-                    self._query_queue.qsize(),
-                )
-            except queue.Full:
-                try:
-                    self._query_queue.get_nowait()
-                    self._query_queue.put_nowait(event)
-                    log.warning(
-                        "[JarvisDaemon] Queue full — dropped oldest, queued new query"
-                    )
-                except queue.Empty:
-                    pass
-            self._enter_active_listening("query-queued-while-busy")
-            return
-
         self.state.record_audio_activity()
 
-        # Send segment audio as final waveform burst before processing
+        # Send segment audio as waveform burst for visual feedback
         self.ui.send_command(UICommand("update_waveform", event.audio))
-
-        # 1. Fast transcribe (base model) — quick check ────────────────
         self.ui.send_command(UICommand("set_state", "processing"))
-        fast_text, language = self.stt.transcribe(event.audio, fast=True)
 
-        if not fast_text or not fast_text.strip():
-            log.debug("[JarvisDaemon] Empty transcription (fast), ignoring")
-            self.ui.send_command(UICommand("set_state", "listening"))
-            return
-
+        label = "background" if event.background else "foreground"
         log.info(
-            "[JarvisDaemon] Fast transcribe (%s): %s",
-            language,
-            fast_text[:100],
+            "[JarvisDaemon] Enqueueing %s segment (%.1fs audio, queue=%d)",
+            label, event.duration_seconds, self._query_queue.qsize(),
         )
 
-        text = fast_text
-        if self._use_precise_stt:
-            # The precise pass improves accuracy, but it adds noticeable
-            # latency. Keep it opt-in for production responsiveness.
-            text, language = self.stt.transcribe(event.audio, fast=False)
-
-            if not text or not text.strip():
-                text = fast_text  # fallback to fast if medium returns empty
-
-            log.info(
-                "[JarvisDaemon] Precise transcribe (%s): %s",
-                language,
-                text[:100],
-            )
-
-        # 3. Enrich with Engram context ─────────────────────────────────
-        enriched_prompt = self.engram.enrich_prompt(text, language=language or "es")
-
-        # 3. Query backend ──────────────────────────────────────────────
-        result = self.router.query(enriched_prompt)
-
-        if not result.ok:
-            log.error("[JarvisDaemon] Query failed: %s", result.error)
-            self._speak_with_ui_feedback(
-                "Lo siento, hubo un error procesando tu consulta.",
-                language or "es",
-            )
-            self._enter_active_listening("query-error")
-            return
-
-        log.info(
-            "[JarvisDaemon] Response from %s (%.0fms): %s...",
-            result.backend,
-            result.latency_ms,
-            result.text[:100],
-        )
-
-        # 4. Speak response ─────────────────────────────────────────────
-        self._speak_with_ui_feedback(result.text, language or None)
-
-        # 5. Track exchange ─────────────────────────────────────────────
-        self._exchanges.append(
-            {
-                "user": text,
-                "response": result.text[:500],
-                "language": language,
-                "backend": result.backend,
-                "timestamp": time.time(),
-            }
-        )
-
-        # 6. Back to listening ──────────────────────────────────────────
-        self._enter_active_listening("response-complete")
-
-        # 7. Check for queued queries ────────────────────────────────
-        if not self._query_queue.empty():
+        try:
+            self._query_queue.put_nowait(event)
+        except queue.Full:
             try:
-                queued_event = self._query_queue.get_nowait()
-                log.info("[JarvisDaemon] Processing queued event (%.1fs audio)",
-                         queued_event.duration_seconds)
-                self._handle_segment(queued_event)
+                self._query_queue.get_nowait()
+                self._query_queue.put_nowait(event)
+                log.warning("[JarvisDaemon] Queue full — dropped oldest, enqueued new segment")
             except queue.Empty:
                 pass
 
-    def _is_processing_or_speaking(self) -> bool:
-        """Check if Jarvis is currently processing a query or speaking TTS."""
-        ui_state = getattr(self.ui, '_ui_state', 'idle')
-        return (
-            tts_module.is_speaking()
-            or ui_state in ("processing", "speaking")
+    def _drain_response_queue(self) -> None:
+        """Play all ready responses from the worker thread (Stage 2).
+
+        Called from the main loop on every tick while ACTIVO.  Each
+        response is spoken via TTS, the exchange is recorded, and then
+        the next response (if any) plays immediately.
+        """
+        played = False
+        while not self._response_queue.empty():
+            try:
+                user_text, response_text, language, backend = (
+                    self._response_queue.get_nowait()
+                )
+            except queue.Empty:
+                break
+
+            # Handle sleep command: finish remaining responses then deactivate
+            if response_text == "__SLEEP__":
+                log.info("[JarvisDaemon] Sleep command: draining remaining responses then sleeping")
+                # Drain any remaining responses first
+                while not self._response_queue.empty():
+                    try:
+                        ut, rt, lg, bk = self._response_queue.get_nowait()
+                        if rt != "__SLEEP__":
+                            self._speak_with_ui_feedback(rt, lg or None)
+                    except queue.Empty:
+                        break
+                self._speak_with_ui_feedback("Entendido, me voy a dormir.", "es")
+                self._deactivate()
+                return
+
+            played = True
+            log.info(
+                "[TTS] Playing queued response (%s): %s...",
+                backend, response_text[:80],
+            )
+
+            # Speak on the main/daemon thread (coordinates mute window + UI)
+            self._speak_with_ui_feedback(response_text, language or None)
+
+            # Track exchange for session history
+            self._exchanges.append(
+                {
+                    "user": user_text,
+                    "response": response_text[:500],
+                    "language": language,
+                    "backend": backend,
+                    "timestamp": time.time(),
+                }
+            )
+
+        if played:
+            self._enter_active_listening("response-complete")
+
+    @staticmethod
+    def _is_sleep_command(text: str) -> bool:
+        """Check if the transcribed text is a sleep/deactivate command."""
+        normalized = text.strip().lower()
+        sleep_patterns = (
+            "jarvis dormido", "jarvis dormir", "jarvis duerme",
+            "jarvis apágate", "jarvis apagate", "jarvis para",
+            "jarvis stop", "jarvis sleep",
         )
+        return any(pattern in normalized for pattern in sleep_patterns)
 
     def _enter_active_listening(self, reason: str) -> None:
         """Return to active listening after TTS without requiring wake word."""
@@ -378,7 +432,14 @@ class JarvisDaemon:
     # ------------------------------------------------------------------
 
     def _deactivate(self) -> None:
-        """Transition to DORMIDO: hide UI, save session to Engram."""
+        """Transition to DORMIDO: hide UI, save session to Engram.
+
+        Drains any remaining responses before deactivating so no work
+        is silently lost.
+        """
+        # Play any remaining queued responses before going dormant
+        self._drain_response_queue()
+
         log.info(
             "[JarvisDaemon] Deactivating — saving session with %d exchanges",
             len(self._exchanges),
@@ -406,6 +467,12 @@ class JarvisDaemon:
     def _shutdown(self) -> None:
         """Clean shutdown of all modules."""
         log.info("[JarvisDaemon] Shutting down...")
+
+        # Stop the query worker thread
+        self._worker_stop.set()
+        self._worker_thread.join(timeout=3.0)
+        if self._worker_thread.is_alive():
+            log.warning("[JarvisDaemon] Worker thread did not stop in time")
 
         # Save any remaining exchanges before exit
         if self._exchanges:
