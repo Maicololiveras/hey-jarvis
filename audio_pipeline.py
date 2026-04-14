@@ -355,6 +355,13 @@ def _apply_noise_reduction(
             _RAW_FALLBACK_WARNED = True
         return audio
 
+    # noisereduce needs minimum ~4096 samples for spectral gating.
+    # Short chunks (e.g. 80ms = 1280 samples) cause "noverlap must be less than nperseg".
+    # Only apply to longer segments (e.g. full speech segments before STT).
+    min_samples = 4096
+    if audio.size < min_samples:
+        return audio
+
     try:
         reduced = nr.reduce_noise(
             y=audio,
