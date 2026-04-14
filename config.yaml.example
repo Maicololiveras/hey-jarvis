@@ -34,7 +34,7 @@ audio:
 stt:
   engine: "faster-whisper"         # STT engine: "faster-whisper" | "groq"
   model_path: "D:/Transcripcion con ia/whisper_models/medium"  # Path to Whisper model
-  fast_model_path: "D:/Transcripcion con ia/whisper_models/tiny"  # Fast wake/command model
+  fast_model_path: "D:/Transcripcion con ia/whisper_models/base"  # Fast wake/command model
   model: "whisper-large-v3"        # Groq Whisper model when engine="groq"
   api_key_env: "GROQ_API_KEY"      # Env var that stores the Groq API key
   use_precise_pass: false          # true = run a second medium pass before querying AI
@@ -115,6 +115,6 @@ engram:
 wake_word:
   engine: "openwakeword"           # Wake word engine
   model: "hey_jarvis"             # Model identifier
-  threshold: 0.04                  # Detection confidence threshold (0.0-1.0)
+  threshold: 0.12                  # Detection confidence threshold (0.0-1.0)
   consecutive_frames: 2            # Required consecutive frames above threshold
   extra_gain: 2.0                 # Additional gain for wake word audio stream

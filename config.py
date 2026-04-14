@@ -79,7 +79,7 @@ Format (version 2):
     wake_word:
       engine: "openwakeword"
       model: "hey_jarvis"
-      threshold: 0.04
+      threshold: 0.12
       consecutive_frames: 2
       extra_gain: 2.0
 """
@@ -191,7 +191,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "wake_word": {
         "engine": "openwakeword",
         "model": "hey_jarvis",
-        "threshold": 0.04,
+        "threshold": 0.12,
         "consecutive_frames": 2,
         "extra_gain": 2.0,
     },
