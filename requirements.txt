@@ -17,3 +17,5 @@ groq>=0.11
 grpcio>=1.66
 protobuf>=5.27
 grpcio-tools>=1.66
+rapidfuzz>=3.0
+av>=12.0
