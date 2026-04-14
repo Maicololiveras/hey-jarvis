@@ -7,6 +7,7 @@ import math
 import queue
 import sys
 import time
+from collections.abc import Callable
 from typing import Optional
 
 import numpy as np
@@ -21,6 +22,7 @@ log = logging.getLogger(__name__)
 try:
     from PyQt6.QtCore import Qt, QTimer, QRect, QPointF
     from PyQt6.QtGui import (
+        QAction,
         QPainter,
         QColor,
         QRadialGradient,
@@ -28,7 +30,7 @@ try:
         QPen,
         QRegion,
     )
-    from PyQt6.QtWidgets import QApplication, QWidget
+    from PyQt6.QtWidgets import QApplication, QMenu, QWidget
 
     HAS_PYQT6 = True
 except ImportError:
@@ -106,6 +108,9 @@ if HAS_PYQT6:
 
             # --- Thread-safe command queue ------------------------------
             self._queue: queue.Queue[UICommand] = queue.Queue()
+            self._current_backend = ""
+            self._available_backends: list[str] = []
+            self._on_backend_selected: Callable[[str], None] | None = None
 
             # --- Window flags ------------------------------------------
             self.setWindowFlags(
@@ -140,6 +145,20 @@ if HAS_PYQT6:
                 "JarvisUI initialized: %dpx circle, %dfps timer",
                 self._diameter,
                 fps,
+            )
+
+        def configure_backend_selector(
+            self,
+            current_backend: str,
+            available_backends: list[str],
+            on_backend_selected: Callable[[str], None],
+        ) -> None:
+            """Register the backend chooser shown on UI double click."""
+            self._current_backend = current_backend
+            self._available_backends = available_backends
+            self._on_backend_selected = on_backend_selected
+            self.setToolTip(
+                f"Backend activo: {current_backend}. Doble click para cambiarlo."
             )
 
         # ---------------------------------------------------------------
@@ -353,8 +372,8 @@ if HAS_PYQT6:
 
             painter.end()
 
-            # Keep animation ticking for non-audio states
-            if state == "idle" or not has_audio:
+            # Keep animation ticking for all animated states
+            if state in ("idle", "listening", "speaking", "processing"):
                 self.update()
 
         # ---------------------------------------------------------------
@@ -378,6 +397,43 @@ if HAS_PYQT6:
             # Repaint if anything was processed
             if processed:
                 self.update()
+
+        def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt naming
+            """Open a minimal backend chooser on left-button double click."""
+            if event.button() != Qt.MouseButton.LeftButton:
+                super().mouseDoubleClickEvent(event)
+                return
+            self._show_backend_menu(event.globalPosition().toPoint())
+            event.accept()
+
+        def _show_backend_menu(self, global_pos) -> None:
+            if not self._available_backends or self._on_backend_selected is None:
+                log.warning("Backend selector requested before it was configured")
+                return
+
+            menu = QMenu(self)
+            menu.setTitle("Seleccionar backend")
+
+            for backend in self._available_backends:
+                action = QAction(backend, menu)
+                action.setCheckable(True)
+                action.setChecked(backend == self._current_backend)
+                action.triggered.connect(
+                    lambda checked=False, name=backend: self._select_backend(name)
+                )
+                menu.addAction(action)
+
+            menu.exec(global_pos)
+
+        def _select_backend(self, backend: str) -> None:
+            if backend == self._current_backend:
+                return
+            if self._on_backend_selected is None:
+                return
+
+            self._current_backend = backend
+            self.setToolTip(f"Backend activo: {backend}. Doble click para cambiarlo.")
+            self._on_backend_selected(backend)
 
         def update_waveform(self, audio_samples: np.ndarray) -> None:
             """Compute FFT of *audio_samples* and store frequency bins for rendering.
@@ -483,6 +539,18 @@ else:
         def __init__(self) -> None:
             log.info("NullUI: PyQt6 not available — all UI calls are no-ops")
             self._queue: queue.Queue[UICommand] = queue.Queue()
+
+        def configure_backend_selector(
+            self,
+            current_backend: str,
+            available_backends: list[str],
+            on_backend_selected: Callable[[str], None],
+        ) -> None:
+            log.debug(
+                "NullUI.configure_backend_selector(%s, %s) — no-op",
+                current_backend,
+                available_backends,
+            )
 
         def send_command(self, cmd: UICommand) -> None:
             log.debug("NullUI ignoring command: %s", cmd.action)
