@@ -149,9 +149,7 @@ class JarvisDaemon:
         )
         self.state.activate()
         self.ui.send_command(UICommand("show"))
-        duration = self._speak_with_ui_feedback("Si, te escucho", "es")
-        # Short mute to avoid echo, but don't over-mute — user needs to talk right after
-        self.audio.set_mute_window(duration + 0.3)
+        self._speak_with_ui_feedback("Si, te escucho", "es")
         self.ui.send_command(UICommand("set_state", "listening"))
         # Reset audio activity timer so silence timeout starts AFTER greeting
         self.state.record_audio_activity()
@@ -223,10 +221,7 @@ class JarvisDaemon:
         )
 
         # 4. Speak response ─────────────────────────────────────────────
-        duration = self._speak_with_ui_feedback(result.text, language or None)
-
-        # Mute the mic for the TTS duration + 1s buffer to avoid echo.
-        self.audio.set_mute_window(duration + 1.0)
+        self._speak_with_ui_feedback(result.text, language or None)
 
         # 5. Track exchange ─────────────────────────────────────────────
         self._exchanges.append(
@@ -292,14 +287,20 @@ class JarvisDaemon:
         def _run_tts() -> None:
             result["duration"] = tts_module.speak(text, language)
 
+        # Keep the microphone muted for the real TTS playback window, not an estimate.
+        self.audio.set_mute_window(3600.0)
         worker = threading.Thread(target=_run_tts, name="jarvis-tts", daemon=True)
         worker.start()
 
-        while worker.is_alive():
-            self._feed_ui_waveform(speaking_override=True)
-            time.sleep(0.05)
+        try:
+            while worker.is_alive():
+                self._feed_ui_waveform(speaking_override=True)
+                time.sleep(0.05)
 
-        worker.join()
+            worker.join()
+        finally:
+            self.audio.clear_mute_window()
+
         return result["duration"]
 
     # ------------------------------------------------------------------

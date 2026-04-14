@@ -697,6 +697,11 @@ class AudioPipeline:
         self._mute_until = time.time() + duration_seconds
         logger.debug("Mute window set: %.1fs", duration_seconds)
 
+    def clear_mute_window(self) -> None:
+        """Clear any active mute window immediately."""
+        self._mute_until = 0.0
+        logger.debug("Mute window cleared")
+
     def close(self) -> None:
         """Signal the stream loop to stop and release resources."""
         self._closed = True
