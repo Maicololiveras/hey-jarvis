@@ -314,14 +314,10 @@ class JarvisDaemon:
             )
             return
 
+        self.state.activate()
         log.info(
             "[JarvisDaemon] Wake word detected (score=%.3f, session=%s)",
             event.score,
-            self.state.session_id,
-        )
-        self.state.activate()
-        log.info(
-            "[JarvisDaemon] Wake session started (session=%s)",
             self.state.session_id,
         )
         self.ui.send_command(UICommand("show"))
