@@ -1,7 +1,10 @@
-"""TTS module for Hey Jarvis — edge-tts + ffplay with language detection.
+"""TTS module for Hey Jarvis — edge-tts + sounddevice with language detection.
 
 Provides language-aware voice selection, offline fallback via pyttsx3,
 and speaking-state tracking for mute-window coordination (TASK-013).
+
+Primary playback: PyAV decodes MP3 → sounddevice plays raw PCM.
+Fallback playback: ffplay subprocess (if sounddevice/PyAV fail).
 """
 
 from __future__ import annotations
@@ -14,8 +17,11 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from typing import Optional
+
+import numpy as np
 
 from jarvis.config import get_tts_config
 
@@ -24,13 +30,33 @@ logger = logging.getLogger(__name__)
 # Windows flag to hide console window when launching subprocesses.
 _CREATE_NO_WINDOW = 0x08000000
 
-# Track active ffplay process for cleanup on shutdown.
+# Track active ffplay process for cleanup on shutdown (fallback path only).
 _active_ffplay: subprocess.Popen | None = None
+
+# Threading event to signal playback completion to other modules.
+_playback_completed = threading.Event()
+_playback_completed.set()  # Not playing initially.
 
 
 def kill_active_playback() -> None:
-    """Kill any running ffplay process. Call on shutdown or restart."""
+    """Stop any running playback. Call on shutdown or restart.
+
+    Stops sounddevice playback first, then kills any ffplay fallback process.
+    """
     global _active_ffplay
+
+    # Stop sounddevice playback (primary path).
+    try:
+        import sounddevice as sd
+
+        sd.stop()
+        logger.info("Stopped sounddevice playback")
+    except Exception:
+        pass
+
+    _playback_completed.set()
+
+    # Kill ffplay if it's running (fallback path).
     if _active_ffplay and _active_ffplay.poll() is None:
         try:
             _active_ffplay.kill()
@@ -38,14 +64,17 @@ def kill_active_playback() -> None:
         except Exception:
             pass
     _active_ffplay = None
-    # Also kill any orphan ffplay processes
+
+    # Also kill any orphan ffplay processes.
     try:
         subprocess.run(
             ["taskkill", "/F", "/IM", "ffplay.exe"],
-            capture_output=True, creationflags=_CREATE_NO_WINDOW,
+            capture_output=True,
+            creationflags=_CREATE_NO_WINDOW,
         )
     except Exception:
         pass
+
 
 # Rough chars-per-second estimate for speech duration.
 _CHARS_PER_SECOND = 15.0
@@ -90,7 +119,7 @@ def detect_language(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# ffplay resolver (same logic as speak.py)
+# ffplay resolver — kept as FALLBACK if sounddevice/PyAV fail
 # ---------------------------------------------------------------------------
 
 
@@ -147,6 +176,52 @@ def _rate_percent_to_multiplier(rate: object) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
+# PyAV decoder: MP3 → numpy PCM array
+# ---------------------------------------------------------------------------
+
+
+def _decode_mp3_to_pcm(filepath: str) -> tuple[np.ndarray, int]:
+    """Decode an MP3 file to a float32 numpy array using PyAV.
+
+    Returns
+    -------
+    tuple[np.ndarray, int]
+        (audio_data, sample_rate) where audio_data is float32 in [-1, 1].
+    """
+    import av
+
+    container = av.open(filepath)
+    stream = container.streams.audio[0]
+
+    frames: list[np.ndarray] = []
+    sample_rate: int = 0
+
+    for frame in container.decode(audio=0):
+        # Resample to s16 (signed 16-bit) layout for consistent handling.
+        resampled = frame.to_ndarray(format="s16")
+        if sample_rate == 0:
+            sample_rate = frame.sample_rate
+        frames.append(resampled)
+
+    container.close()
+
+    if not frames:
+        raise RuntimeError(f"No audio frames decoded from {filepath}")
+
+    # Concatenate all frames: shape is (num_samples, channels) for s16.
+    raw = np.concatenate(frames, axis=1 if frames[0].ndim == 2 else 0)
+
+    # s16 format from PyAV: rows = channels, cols = samples → transpose.
+    if raw.ndim == 2:
+        raw = raw.T  # Now shape is (samples, channels).
+
+    # Convert int16 to float32 in [-1.0, 1.0] for sounddevice.
+    audio_data = raw.astype(np.float32) / 32768.0
+
+    return audio_data, sample_rate
+
+
+# ---------------------------------------------------------------------------
 # Speaking-state tracking
 # ---------------------------------------------------------------------------
 
@@ -155,13 +230,47 @@ _speaking: bool = False
 
 
 def is_speaking() -> bool:
-    """Return ``True`` if a TTS utterance is currently playing."""
+    """Return ``True`` if a TTS utterance is currently playing.
+
+    Checks both the module flag and sounddevice stream state for accuracy.
+    """
+    if not _speaking:
+        return False
+
+    # Double-check with sounddevice — the stream may have finished.
+    try:
+        import sounddevice as sd
+
+        stream = sd.get_stream()
+        if stream is not None and stream.active:
+            return True
+    except Exception:
+        pass
+
+    # If _speaking is True but no sd stream is active, trust the flag
+    # (could be ffplay fallback or pyttsx3).
     return _speaking
 
 
 def get_last_speech_end_time() -> float:
     """Return epoch timestamp when the last utterance finished (0.0 if none)."""
     return _last_speech_end
+
+
+def wait_for_playback(timeout: Optional[float] = None) -> bool:
+    """Block until the current playback finishes.
+
+    Parameters
+    ----------
+    timeout:
+        Maximum seconds to wait.  ``None`` means wait forever.
+
+    Returns
+    -------
+    bool
+        ``True`` if playback completed, ``False`` if timed out.
+    """
+    return _playback_completed.wait(timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -177,33 +286,84 @@ def _pick_voice(language: str, cfg: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Core TTS — online (edge-tts) and offline (pyttsx3)
+# Core TTS — online (edge-tts) with sounddevice primary, ffplay fallback
 # ---------------------------------------------------------------------------
 
 
 async def _speak_online(text: str, voice: str, cfg: dict) -> None:
-    """Synthesise *text* with edge-tts and play via ffplay."""
+    """Synthesise *text* with edge-tts and play via sounddevice (PyAV decode).
+
+    Falls back to ffplay subprocess if sounddevice/PyAV playback fails.
+    """
     import edge_tts  # lazy — optional dep
 
     output = tempfile.mktemp(suffix=".mp3")
-    rate = _normalize_edge_rate(cfg.get("rate"))
-    communicate_kwargs = {"rate": rate} if rate else {}
-    communicate = edge_tts.Communicate(text, voice, **communicate_kwargs)
-    await communicate.save(output)
+    try:
+        rate = _normalize_edge_rate(cfg.get("rate"))
+        communicate_kwargs = {"rate": rate} if rate else {}
+        communicate = edge_tts.Communicate(text, voice, **communicate_kwargs)
+        await communicate.save(output)
+
+        # --- Primary path: PyAV decode + sounddevice playback ---
+        try:
+            _play_with_sounddevice(output)
+            return
+        except Exception:
+            logger.warning(
+                "sounddevice playback failed, falling back to ffplay",
+                exc_info=True,
+            )
+
+        # --- Fallback path: ffplay subprocess ---
+        _play_with_ffplay(output, cfg)
+    finally:
+        # Clean up temp file.
+        try:
+            os.unlink(output)
+        except OSError:
+            pass
+
+
+def _play_with_sounddevice(filepath: str) -> None:
+    """Decode MP3 with PyAV and play via sounddevice."""
+    import sounddevice as sd
+
+    _playback_completed.clear()
+    try:
+        audio_data, sample_rate = _decode_mp3_to_pcm(filepath)
+        logger.debug(
+            "Decoded MP3: %d samples, %d Hz, %s shape",
+            audio_data.shape[0],
+            sample_rate,
+            audio_data.shape,
+        )
+
+        sd.play(audio_data, samplerate=sample_rate)
+        sd.wait()  # Block until playback finishes (interruptible via sd.stop()).
+    finally:
+        _playback_completed.set()
+
+
+def _play_with_ffplay(filepath: str, cfg: dict) -> None:
+    """Play audio file via ffplay subprocess (fallback)."""
+    global _active_ffplay
 
     playback = _resolve_playback_binary(cfg.get("playback"))
-    logger.debug("Playing TTS via %s -> %s", playback, output)
+    logger.debug("Playing TTS via ffplay fallback: %s -> %s", playback, filepath)
 
-    global _active_ffplay
-    proc = subprocess.Popen(
-        [playback, "-nodisp", "-autoexit", "-loglevel", "quiet", output],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=_CREATE_NO_WINDOW,
-    )
-    _active_ffplay = proc
-    proc.wait()  # block until playback finishes so _speaking stays accurate
-    _active_ffplay = None
+    _playback_completed.clear()
+    try:
+        proc = subprocess.Popen(
+            [playback, "-nodisp", "-autoexit", "-loglevel", "quiet", filepath],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+        _active_ffplay = proc
+        proc.wait()  # Block until playback finishes.
+        _active_ffplay = None
+    finally:
+        _playback_completed.set()
 
 
 def _speak_offline(text: str, language: str, cfg: dict) -> None:
