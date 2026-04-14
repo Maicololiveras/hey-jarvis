@@ -27,6 +27,7 @@ audio:
   agc_target_peak: 0.9            # Automatic Gain Control target peak level
   agc_max_gain: 20.0              # AGC maximum gain multiplier
   agc_min_peak: 0.005             # AGC minimum peak threshold (below = silence)
+  noise_reduce: false             # Apply conservative noisereduce only on VAD/STT path
 
 # ---------------------------------------------------------------------------
 # Speech-to-Text

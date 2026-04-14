@@ -21,6 +21,14 @@ from typing import Any
 import numpy as np
 import sounddevice as sd
 
+try:
+    import noisereduce as nr
+
+    _NOISEREDUCE_AVAILABLE = True
+except ImportError:
+    nr = None
+    _NOISEREDUCE_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -33,6 +41,7 @@ _DEFAULTS: dict[str, Any] = {
     "agc_target_peak": 0.9,
     "agc_max_gain": 10.0,
     "agc_min_peak": 0.01,
+    "noise_reduce": False,
     "device_override": None,
 }
 
@@ -222,6 +231,32 @@ def preprocess_segment(
     return np.clip(boosted, -1.0, 1.0).astype(np.float32)
 
 
+def _apply_noise_reduction(
+    audio: np.ndarray,
+    audio_cfg: dict[str, Any],
+) -> np.ndarray:
+    """Apply conservative stationary noise reduction when enabled."""
+    noise_reduce_enabled = audio_cfg.get("noise_reduce", _DEFAULTS["noise_reduce"])
+    if not noise_reduce_enabled or audio.size == 0:
+        return audio
+
+    if not _NOISEREDUCE_AVAILABLE:
+        return audio
+
+    try:
+        reduced = nr.reduce_noise(
+            y=audio,
+            sr=audio_cfg.get("sample_rate", _DEFAULTS["sample_rate"]),
+            stationary=True,
+            prop_decrease=0.8,
+        )
+    except Exception as exc:
+        logger.warning("Noise reduction failed — continuing without filter: %s", exc)
+        return audio
+
+    return np.clip(np.asarray(reduced, dtype=np.float32), -1.0, 1.0)
+
+
 def select_audio_device(
     audio_cfg: dict[str, Any],
 ) -> tuple[int | None, str]:
@@ -379,6 +414,7 @@ class AudioPipeline:
         self._closed = False
         self._last_audio_frame_at: float = 0.0
         self._recent_rms_peak: float = 0.0
+        self._noise_reduction_warned = False
 
         # Mute window — suppresses processing after TTS playback.
         self._mute_until: float = 0.0
@@ -398,6 +434,15 @@ class AudioPipeline:
         # ── Load openWakeWord ──
         self._ow_model: OpenWakeWordModel | None = None
         self._ow_model_key: str | None = None
+
+        if (
+            self._audio_cfg.get("noise_reduce", _DEFAULTS["noise_reduce"])
+            and not _NOISEREDUCE_AVAILABLE
+        ):
+            logger.warning(
+                "noisereduce package not installed — skipping noise reduction"
+            )
+            self._noise_reduction_warned = True
         if (
             wake_cfg.get("engine", "openwakeword") == "openwakeword"
             and _OPENWAKEWORD_AVAILABLE
@@ -563,14 +608,21 @@ class AudioPipeline:
                 if rms > 0.01:
                     logger.debug("Audio chunk: rms=%.4f, len=%d", rms, len(samples))
 
-                # Chunk-level preprocessing: highpass + pre-gain.
+                # Keep wake-word audio on the existing path; noise reduction is
+                # only applied to the VAD/STT branch so openWakeWord behavior is preserved.
                 samples = preprocess_chunk(samples, self._audio_cfg)
+                vad_samples = _apply_noise_reduction(samples, self._audio_cfg)
+                if not _NOISEREDUCE_AVAILABLE and not self._noise_reduction_warned:
+                    logger.warning(
+                        "noisereduce package not installed — skipping noise reduction"
+                    )
+                    self._noise_reduction_warned = True
 
                 # Expose the latest preprocessed chunk for UI audio levels.
                 self.last_chunk = samples
 
                 if leftover.size:
-                    samples = np.concatenate([leftover, samples])
+                    vad_samples = np.concatenate([leftover, vad_samples])
                     leftover = np.empty(0, dtype=np.float32)
 
                 # ── openWakeWord inference (skipped during mute) ──
@@ -643,10 +695,10 @@ class AudioPipeline:
                             break
 
                 # ── Silero VAD inference ──
-                num_windows = len(samples) // _SILERO_WINDOW_SAMPLES
+                num_windows = len(vad_samples) // _SILERO_WINDOW_SAMPLES
                 for i in range(num_windows):
                     start = i * _SILERO_WINDOW_SAMPLES
-                    window = samples[start : start + _SILERO_WINDOW_SAMPLES]
+                    window = vad_samples[start : start + _SILERO_WINDOW_SAMPLES]
 
                     event = vad(torch.from_numpy(window))
 
@@ -674,6 +726,9 @@ class AudioPipeline:
                             segment_audio = preprocess_segment(
                                 segment_audio, self._audio_cfg
                             )
+                            segment_audio = _apply_noise_reduction(
+                                segment_audio, self._audio_cfg
+                            )
                             duration = segment_audio.size / self._sample_rate
                             if is_muted:
                                 logger.info(
@@ -688,8 +743,8 @@ class AudioPipeline:
                             speech_buffer = []
 
                 tail = num_windows * _SILERO_WINDOW_SAMPLES
-                if tail < len(samples):
-                    leftover = samples[tail:].copy()
+                if tail < len(vad_samples):
+                    leftover = vad_samples[tail:].copy()
 
     # ------------------------------------------------------------------
     # Public control methods

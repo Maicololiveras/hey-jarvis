@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tempfile
 import time
 import wave
@@ -51,6 +52,8 @@ _CANNED_HALLUCINATIONS_LIGHT: tuple[str, ...] = (
     "gracias por ver",
     "amara.org",
 )
+
+_REAL_WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]+")
 
 
 class STT:
@@ -219,6 +222,13 @@ class STT:
         if not strict and text:
             if any(p in text.lower() for p in _CANNED_HALLUCINATIONS_LIGHT):
                 log.debug("Canned phrase filtered (%.2fs): '%s'", elapsed, text[:80])
+                return ""
+
+        if text:
+            tokens = [token for token in text.split() if token.strip()]
+            has_real_word = any(_REAL_WORD_RE.search(token) for token in tokens)
+            if len(tokens) < 3 and not has_real_word:
+                log.debug("Noise transcription discarded")
                 return ""
 
         return text

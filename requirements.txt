@@ -6,6 +6,7 @@ sounddevice>=0.4
 numpy>=1.24
 torch>=2.0
 silero-vad>=5.0
+noisereduce>=3.0
 pyyaml>=6.0
 pyttsx3>=2.90
 openai>=1.0

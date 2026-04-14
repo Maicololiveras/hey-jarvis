@@ -119,6 +119,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "agc_target_peak": 0.9,
         "agc_max_gain": 20.0,
         "agc_min_peak": 0.005,
+        "noise_reduce": False,
     },
     "stt": {
         "engine": "faster-whisper",
