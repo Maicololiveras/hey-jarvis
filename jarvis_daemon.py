@@ -53,26 +53,36 @@ class QueryTask:
         self.response: dict[str, Any] | None = None
 
     def complete(self, response_text: str, language: str | None, backend: str) -> None:
-        self.future.put_nowait(
-            {
-                "response": response_text,
-                "language": language,
-                "backend": backend,
-                "ok": True,
-                "error": None,
-            }
-        )
+        try:
+            self.future.put_nowait(
+                {
+                    "response": response_text,
+                    "language": language,
+                    "backend": backend,
+                    "ok": True,
+                    "error": None,
+                }
+            )
+        except queue.Full:
+            log.warning(
+                "[QueryTask] Ignoring duplicate completion for: %s", self.text[:80]
+            )
 
     def fail(self, error: str) -> None:
-        self.future.put_nowait(
-            {
-                "response": "",
-                "language": self.language,
-                "backend": "",
-                "ok": False,
-                "error": error,
-            }
-        )
+        try:
+            self.future.put_nowait(
+                {
+                    "response": "",
+                    "language": self.language,
+                    "backend": "",
+                    "ok": False,
+                    "error": error,
+                }
+            )
+        except queue.Full:
+            log.warning(
+                "[QueryTask] Ignoring duplicate failure for: %s", self.text[:80]
+            )
 
     def poll_response(self) -> dict[str, Any] | None:
         if self.response is not None:
@@ -328,14 +338,15 @@ class JarvisDaemon:
             return
 
         current = self._pending_tasks[0]
-        if current.response is None:
+        response = current.poll_response()
+        if response is None:
             if (time.time() - current.created_at) > 60.0:
                 current.fail("timeout waiting for backend response")
-            else:
+                response = current.poll_response()
+            if response is None:
                 self.ui.send_command(UICommand("set_state", "processing"))
                 return
 
-        response = current.poll_response()
         if response is None:
             self.ui.send_command(UICommand("set_state", "processing"))
             return
