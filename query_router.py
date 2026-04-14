@@ -20,6 +20,10 @@ log = logging.getLogger(__name__)
 SYSTEM_PROMPT_FILE = Path(__file__).parent / "system_prompt.txt"
 SYSTEM_PROMPT_LOCAL_FILE = Path(__file__).parent / "system_prompt_local.txt"
 DEFAULT_CLAUDE_P_ARGS = ["-p", "--bare", "--model", "haiku", "--no-session-persistence"]
+CLAUDE_P_INVALID_RESPONSE_PATTERNS = (
+    "session terminated.",
+    "session terminated",
+)
 
 
 class QueryRouter:
@@ -147,6 +151,15 @@ class QueryRouter:
             normalized.insert(0, "-p")
         return normalized
 
+    @staticmethod
+    def _is_invalid_claude_p_response(response: str) -> bool:
+        normalized = response.strip().lower()
+        if not normalized:
+            return True
+        return any(
+            pattern in normalized for pattern in CLAUDE_P_INVALID_RESPONSE_PATTERNS
+        )
+
     def get_default_backend(self) -> str:
         with self._lock:
             return self._default_backend
@@ -202,6 +215,12 @@ class QueryRouter:
                 return QueryResult(ok=False, error=error_msg)
 
             response = result.stdout.strip()
+            if self._is_invalid_claude_p_response(response):
+                log.warning(
+                    "[QueryRouter] claude-p returned invalid response: %r",
+                    response[:200],
+                )
+                return QueryResult(ok=False, error="claude-p returned invalid response")
             log.info("[QueryRouter] claude-p responded (%d chars)", len(response))
             return QueryResult(ok=True, text=response)
 
