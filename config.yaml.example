@@ -39,8 +39,8 @@ stt:
   model: "whisper-large-v3"        # Groq Whisper model when engine="groq"
   api_key_env: "GROQ_API_KEY"      # Env var that stores the Groq API key
   use_precise_pass: false          # true = run a second medium pass before querying AI
-  device: "cpu"                    # "cpu" | "cuda"
-  compute_type: "int8"            # "int8" | "float16" | "float32"
+  device: "cuda"                   # Preferred device; falls back to CPU if CUDA is unavailable
+  compute_type: "int8_float16"     # Preferred CUDA compute type; CPU fallback remaps to a safe type
 
 # ---------------------------------------------------------------------------
 # Text-to-Speech

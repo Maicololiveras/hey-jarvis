@@ -19,6 +19,7 @@ import tempfile
 import time
 import wave
 from collections import Counter
+from typing import Any
 
 import numpy as np
 
@@ -76,8 +77,8 @@ class STT:
     def __init__(
         self,
         model_path: str,
-        device: str = "cpu",
-        compute_type: str = "int8",
+        device: str = "cuda",
+        compute_type: str = "int8_float16",
         fast_model_path: str = "",
         engine: str = "faster-whisper",
         api_key_env: str = "GROQ_API_KEY",
@@ -89,6 +90,8 @@ class STT:
         self._fast_model_path = fast_model_path  # fast (base/tiny)
         self._device = device
         self._compute_type = compute_type
+        self._effective_device = device
+        self._effective_compute_type = compute_type
         self._api_key_env = api_key_env
         self._language = language
         self._groq_model = groq_model
@@ -237,25 +240,83 @@ class STT:
     # Lazy model loading
     # ------------------------------------------------------------------
 
+    def _resolve_runtime_device(self) -> tuple[str, str]:
+        """Resolve the preferred runtime device/compute pair."""
+        device = (self._device or "cuda").strip().lower()
+        compute_type = (self._compute_type or "int8_float16").strip().lower()
+        return device, compute_type
+
+    @staticmethod
+    def _cpu_compute_type(compute_type: str) -> str:
+        """Map GPU-oriented compute types to a safe CPU value."""
+        if compute_type in {"float16", "int8_float16", "int16_float16", "bfloat16"}:
+            return "int8"
+        return compute_type or "int8"
+
+    def _load_whisper_model(self, model_path: str, *, fast: bool) -> Any:
+        """Load a Whisper model, retrying on CPU when CUDA init fails."""
+        from faster_whisper import WhisperModel  # noqa: WPS433 (nested import)
+
+        resolved_device, resolved_compute_type = self._resolve_runtime_device()
+        kind = "FAST Whisper model" if fast else "Whisper model"
+
+        if resolved_device == "cuda":
+            try:
+                import torch  # noqa: WPS433 (lazy import)
+            except ImportError:
+                log.warning(
+                    "CUDA requested for STT and torch is not installed; trying faster-whisper CUDA load anyway"
+                )
+            else:
+                if not torch.cuda.is_available():
+                    log.warning(
+                        "torch.cuda.is_available() is False, but attempting faster-whisper CUDA load anyway"
+                    )
+
+        log.info(
+            "Loading %s from '%s' (device=%s, compute=%s) ...",
+            kind,
+            model_path,
+            resolved_device,
+            resolved_compute_type,
+        )
+
+        try:
+            model = WhisperModel(
+                model_path,
+                device=resolved_device,
+                compute_type=resolved_compute_type,
+            )
+            self._effective_device = resolved_device
+            self._effective_compute_type = resolved_compute_type
+            log.info("%s loaded.", kind)
+            return model
+        except Exception as exc:
+            if resolved_device != "cuda":
+                raise
+
+            fallback_compute_type = self._cpu_compute_type(resolved_compute_type)
+            log.warning(
+                "CUDA Whisper load failed (%s); retrying on CPU with compute=%s",
+                exc,
+                fallback_compute_type,
+            )
+            model = WhisperModel(
+                model_path,
+                device="cpu",
+                compute_type=fallback_compute_type,
+            )
+            self._effective_device = "cpu"
+            self._effective_compute_type = fallback_compute_type
+            log.info("%s loaded on CPU fallback.", kind)
+            return model
+
     def _ensure_model(self):
         """Load the Whisper model on first use."""
         if self._model is not None:
             return self._model
 
-        from faster_whisper import WhisperModel  # noqa: WPS433 (nested import)
-
-        log.info(
-            "Loading Whisper model from '%s' (device=%s, compute=%s) ...",
-            self._model_path,
-            self._device,
-            self._compute_type,
-        )
-        self._model = WhisperModel(
-            self._model_path,
-            device=self._device,
-            compute_type=self._compute_type,
-        )
-        log.info("Whisper model loaded.")
+        self._model = self._load_whisper_model(self._model_path, fast=False)
         return self._model
 
     def preload(self, *, fast: bool = True, precise: bool = True) -> None:
@@ -272,20 +333,7 @@ class STT:
         if self._fast_model is not None:
             return self._fast_model
 
-        from faster_whisper import WhisperModel
-
-        log.info(
-            "Loading FAST Whisper model from '%s' (device=%s, compute=%s) ...",
-            self._fast_model_path,
-            self._device,
-            self._compute_type,
-        )
-        self._fast_model = WhisperModel(
-            self._fast_model_path,
-            device=self._device,
-            compute_type=self._compute_type,
-        )
-        log.info("Fast Whisper model loaded.")
+        self._fast_model = self._load_whisper_model(self._fast_model_path, fast=True)
         return self._fast_model
 
     def _transcribe_groq(self, audio: np.ndarray, *, strict: bool) -> tuple[str, str]:
