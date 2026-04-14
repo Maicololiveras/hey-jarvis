@@ -9,10 +9,9 @@ import shutil
 import subprocess
 import threading
 import time
-import urllib.request
-import urllib.error
 from pathlib import Path
 
+from .local_model import MaixEngineClient
 from .models import QueryResult
 
 log = logging.getLogger(__name__)
@@ -62,13 +61,13 @@ class QueryRouter:
 
     # Ordered fallback chains per backend.
     _FALLBACK_ORDER: dict[str, list[str]] = {
-        "claude-p": ["claude-p", "opencode", "groq", "local-qwen"],
-        "claude-api": ["claude-api", "opencode", "groq", "local-qwen"],
-        "opencode": ["opencode", "claude-p", "groq", "local-qwen"],
-        "openai": ["openai", "groq", "local-qwen"],
-        "gemini": ["gemini", "groq", "local-qwen"],
-        "local-qwen": ["local-qwen", "opencode", "claude-p"],
-        "groq": ["groq", "local-qwen", "opencode"],
+        "claude-p": ["claude-p", "opencode", "groq", "maix-engine"],
+        "claude-api": ["claude-api", "opencode", "groq", "maix-engine"],
+        "opencode": ["opencode", "claude-p", "groq", "maix-engine"],
+        "openai": ["openai", "groq", "maix-engine"],
+        "gemini": ["gemini", "groq", "maix-engine"],
+        "maix-engine": ["maix-engine", "opencode", "claude-p"],
+        "groq": ["groq", "maix-engine", "opencode"],
     }
 
     def _dispatch(self, backend: str, user_text: str) -> QueryResult:
@@ -85,8 +84,8 @@ class QueryRouter:
             return self._query_gemini(user_text)
         if backend == "groq":
             return self._query_groq(user_text)
-        if backend == "local-qwen":
-            return self._query_local_qwen(user_text)
+        if backend == "maix-engine":
+            return self._query_maix_engine(user_text)
 
     @staticmethod
     def _resolve_command(command: str) -> str:
@@ -271,7 +270,7 @@ class QueryRouter:
             "opencode",
             "openai",
             "gemini",
-            "local-qwen",
+            "maix-engine",
             "groq",
         }
 
@@ -319,66 +318,29 @@ class QueryRouter:
             log.error("[QueryRouter] claude-p timed out after %ds", self._timeout)
             return QueryResult(ok=False, error=f"timeout after {self._timeout}s")
 
-    def _query_local_qwen(self, user_text: str) -> QueryResult:
-        """Query local Qwen via llama-cpp-python OpenAI-compatible API."""
-        backends_cfg = self._config.get("backends", {}).get("local-qwen", {})
-        host = backends_cfg.get("host", "http://localhost")
-        port = backends_cfg.get("port", 8081)
-        url = f"{host}:{port}/v1/chat/completions"
-
-        payload = json.dumps(
-            {
-                "messages": self._chat_messages(user_text, self._system_prompt_local),
-                "temperature": 0.7,
-                "max_tokens": 512,
-            }
-        ).encode("utf-8")
-
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
+    def _query_maix_engine(self, user_text: str) -> QueryResult:
+        """Query Maix AI Engine via gRPC ModelService.Generate."""
+        backend_cfg = self._get_backend_config("maix-engine")
+        client = MaixEngineClient(
+            host=backend_cfg.get("host", "127.0.0.1"),
+            port_file=backend_cfg.get("port_file"),
+            provider=backend_cfg.get("provider", ""),
+            model=backend_cfg.get("model", ""),
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-
-            choices = body.get("choices", [])
-            if not choices:
-                log.error("[QueryRouter] local-qwen returned no choices")
-                return QueryResult(ok=False, error="local-qwen returned empty choices")
-
-            text = choices[0].get("message", {}).get("content", "").strip()
-            log.info("[QueryRouter] local-qwen responded (%d chars)", len(text))
+            text = client.generate(
+                messages=self._conversation_messages(user_text),
+                system_prompt=self._system_prompt_local,
+                timeout=float(self._timeout),
+                temperature=0.7,
+                max_tokens=512,
+            )
+            log.info("[QueryRouter] maix-engine responded (%d chars)", len(text))
             return QueryResult(ok=True, text=text)
-
-        except ConnectionRefusedError:
-            log.error("[QueryRouter] local-qwen server not running at %s", url)
-            return QueryResult(
-                ok=False, error=f"local-qwen server not running at {url}"
-            )
-        except urllib.error.URLError as exc:
-            log.error("[QueryRouter] local-qwen connection error: %s", exc.reason)
-            return QueryResult(
-                ok=False, error=f"local-qwen connection error: {exc.reason}"
-            )
-        except urllib.error.HTTPError as exc:
-            log.error("[QueryRouter] local-qwen HTTP %d: %s", exc.code, exc.reason)
-            return QueryResult(
-                ok=False, error=f"local-qwen HTTP {exc.code}: {exc.reason}"
-            )
-        except TimeoutError:
-            log.error("[QueryRouter] local-qwen timed out after %ds", self._timeout)
-            return QueryResult(
-                ok=False, error=f"local-qwen timeout after {self._timeout}s"
-            )
-        except (json.JSONDecodeError, KeyError, IndexError) as exc:
-            log.error("[QueryRouter] local-qwen response parse error: %s", exc)
-            return QueryResult(
-                ok=False, error=f"local-qwen response parse error: {exc}"
-            )
+        except RuntimeError as exc:
+            log.error("[QueryRouter] maix-engine failed: %s", exc)
+            return QueryResult(ok=False, error=str(exc))
 
     def _query_opencode(self, user_text: str) -> QueryResult:
         """Query OpenCode via non-interactive JSON event stream."""

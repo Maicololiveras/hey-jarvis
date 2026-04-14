@@ -40,7 +40,7 @@ AudioEvent = Union[WakeEvent, SegmentEvent, TickEvent]
 
 @dataclass(frozen=True, slots=True)
 class QueryResult:
-    """Result from a backend query (claude-p, local-qwen, etc.)."""
+    """Result from a backend query (claude-p, maix-engine, etc.)."""
 
     ok: bool
     text: str = ""

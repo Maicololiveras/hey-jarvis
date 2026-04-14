@@ -56,7 +56,7 @@ tts:
 # Query backends
 # ---------------------------------------------------------------------------
 query:
-  default_backend: "claude-api"    # "claude-p" | "claude-api" | "openai" | "gemini" | "local-qwen"
+  default_backend: "claude-api"    # "claude-p" | "claude-api" | "openai" | "gemini" | "maix-engine"
   timeout_seconds: 60              # Timeout for query responses
   max_history: 5                   # Reserved for short conversation windows
 
@@ -82,10 +82,11 @@ query:
       model: "gemini-2.5-pro"      # Gemini model name
       api_key_env: "GEMINI_API_KEY"  # Env var for Gemini API key
 
-    local-qwen:
-      host: "http://localhost"     # Local model server host
-      port: 8081                   # Local model server port
-      model_path: "path/to/model.gguf"  # Path to GGUF model file
+    maix-engine:
+      host: "127.0.0.1"            # Maix AI Engine gRPC host
+      port_file: "%TEMP%\\maix_ai_port.txt"  # File containing the live gRPC port
+      provider: ""                 # Optional provider override for ModelService.Generate
+      model: ""                    # Optional model override for ModelService.Generate
 
 # ---------------------------------------------------------------------------
 # Visual UI (PyQt6 circular overlay)

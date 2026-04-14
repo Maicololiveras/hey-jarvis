@@ -55,10 +55,11 @@ Format (version 2):
         gemini:
           model: "gemini-2.5-pro"
           api_key_env: "GEMINI_API_KEY"
-        local-qwen:
-          host: "http://localhost"
-          port: 8081
-          model_path: "..."
+        maix-engine:
+          host: "127.0.0.1"
+          port_file: "%TEMP%\\maix_ai_port.txt"
+          provider: ""
+          model: ""
 
     ui:
       enabled: true
@@ -168,10 +169,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "model": "llama-3.1-70b-versatile",
                 "api_key_env": "GROQ_API_KEY",
             },
-            "local-qwen": {
-                "host": "http://localhost",
-                "port": 8081,
-                "model_path": "D:\\models\\Qwen\\Qwen2.5-Coder-14B-Instruct-GGUF\\qwen2.5-coder-14b-instruct-q4_0.gguf",
+            "maix-engine": {
+                "host": "127.0.0.1",
+                "port_file": "%TEMP%\\maix_ai_port.txt",
+                "provider": "",
+                "model": "",
             },
         },
     },

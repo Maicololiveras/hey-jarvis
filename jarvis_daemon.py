@@ -4,7 +4,7 @@ Wires together all Jarvis modules:
   AudioPipeline  →  WakeEvent / SegmentEvent
   StateMachine   →  DORMIDO / ACTIVO transitions
   STT            →  speech-to-text via faster-whisper
-  QueryRouter    →  AI backend dispatch (claude-p, local-qwen)
+  QueryRouter    →  AI backend dispatch (claude-p, maix-engine)
   EngramBridge   →  memory enrichment + session persistence
   TTS (functions)→  edge-tts / pyttsx3 speech output
   JarvisUI       →  circular visual feedback window
@@ -90,16 +90,16 @@ class JarvisDaemon:
         # sends commands to the same widget displayed on screen.
         self.ui: JarvisUI = ui if ui is not None else JarvisUI()
 
-        # ── Local model server (precarga) ────────────────────────────────
+        # ── Maix AI Engine preload check ────────────────────────────────
         self._local_model_server = get_server_from_config(cfg)
         if self._local_model_server:
             log.info(
-                "[JarvisDaemon] Preloading local-qwen server: %s",
+                "[JarvisDaemon] Preloading maix-engine client: %s",
                 self._local_model_server.url,
             )
             self._local_model_server.start()
         else:
-            log.warning("[JarvisDaemon] local-qwen not configured, skipping preload")
+            log.warning("[JarvisDaemon] maix-engine not configured, skipping preload")
 
         # ── Session tracking ───────────────────────────────────────────
         self._exchanges: list[dict[str, Any]] = []
