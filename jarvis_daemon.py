@@ -94,7 +94,7 @@ class JarvisDaemon:
         self._last_activity: float = time.time()
 
         # ── Query queue for overlapping requests ───────────────────────
-        self._query_queue: queue.Queue[str] = queue.Queue(maxsize=3)
+        self._query_queue: queue.Queue[SegmentEvent] = queue.Queue(maxsize=3)
         self._max_queue_size = 3
 
         log.info("[JarvisDaemon] All modules initialized")
@@ -164,15 +164,35 @@ class JarvisDaemon:
         """Handle a speech segment: STT → enrich → route → TTS.
 
         Only processes segments while in ACTIVO state.  Short or empty
-        transcriptions are silently ignored.
+        transcriptions are silently ignored.  Background segments (captured
+        during TTS playback) are transcribed and queued for later processing.
         """
         if not self.state.is_activo:
             return
 
-        # If already processing or speaking, queue the request for later
+        # ── Background segment: queue raw event for later processing ──
+        if event.background:
+            log.info(
+                "[JarvisDaemon] Background segment captured during TTS, queuing (%.1fs audio)",
+                event.duration_seconds,
+            )
+            try:
+                self._query_queue.put_nowait(event)
+            except queue.Full:
+                try:
+                    self._query_queue.get_nowait()
+                    self._query_queue.put_nowait(event)
+                    log.warning(
+                        "[JarvisDaemon] Queue full — dropped oldest, queued background segment"
+                    )
+                except queue.Empty:
+                    pass
+            return
+
+        # If already processing or speaking, queue the raw event for later
         if self._query_queue.full() or self._is_processing_or_speaking():
             try:
-                self._query_queue.put_nowait(text)
+                self._query_queue.put_nowait(event)
                 log.info(
                     "[JarvisDaemon] Query queued (%d pending)",
                     self._query_queue.qsize(),
@@ -180,7 +200,7 @@ class JarvisDaemon:
             except queue.Full:
                 try:
                     self._query_queue.get_nowait()
-                    self._query_queue.put_nowait(text)
+                    self._query_queue.put_nowait(event)
                     log.warning(
                         "[JarvisDaemon] Queue full — dropped oldest, queued new query"
                     )
@@ -265,12 +285,11 @@ class JarvisDaemon:
 
         # 7. Check for queued queries ────────────────────────────────
         if not self._query_queue.empty():
-            # Process next queued query after a brief pause
             try:
-                queued_text = self._query_queue.get_nowait()
-                log.info("[JarvisDaemon] Processing queued query: %s", queued_text[:50])
-                # The queued query will be processed on the next user speech segment
-                # For now, just acknowledge it's available
+                queued_event = self._query_queue.get_nowait()
+                log.info("[JarvisDaemon] Processing queued event (%.1fs audio)",
+                         queued_event.duration_seconds)
+                self._handle_segment(queued_event)
             except queue.Empty:
                 pass
 
@@ -364,9 +383,7 @@ class JarvisDaemon:
             "[JarvisDaemon] Deactivating — saving session with %d exchanges",
             len(self._exchanges),
         )
-        clear_history = getattr(self.router, "clear_history", None)
-        if callable(clear_history):
-            clear_history()
+        self.router.clear_history()
         self.state.deactivate()
         self.ui.send_command(
             UICommand("update_waveform", np.zeros(48, dtype=np.float32))

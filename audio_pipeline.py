@@ -555,9 +555,8 @@ class AudioPipeline:
                     yield TickEvent(timestamp=now)
                     continue
 
-                # ── Mute window — skip processing after TTS ──
-                if time.time() < self._mute_until:
-                    continue
+                # ── Mute window — wake word is suppressed, VAD continues ──
+                is_muted = time.time() < self._mute_until
 
                 samples = chunk.flatten().astype(np.float32)
                 rms = float(np.sqrt(np.mean(samples**2)))
@@ -574,8 +573,8 @@ class AudioPipeline:
                     samples = np.concatenate([leftover, samples])
                     leftover = np.empty(0, dtype=np.float32)
 
-                # ── openWakeWord inference ──
-                if self._ow_model is not None:
+                # ── openWakeWord inference (skipped during mute) ──
+                if self._ow_model is not None and not is_muted:
                     ow_buffer = np.concatenate([ow_buffer, samples])
                     while len(ow_buffer) >= _OW_FRAME_SAMPLES:
                         frame = ow_buffer[:_OW_FRAME_SAMPLES]
@@ -635,6 +634,8 @@ class AudioPipeline:
                                 except Exception:
                                     pass
                                 yield WakeEvent(score=score)
+                                ow_buffer = np.empty(0, dtype=np.float32)
+                                break
                             else:
                                 ow_consecutive_hits = 0
                         except Exception as exc:
@@ -674,9 +675,15 @@ class AudioPipeline:
                                 segment_audio, self._audio_cfg
                             )
                             duration = segment_audio.size / self._sample_rate
+                            if is_muted:
+                                logger.info(
+                                    "Background segment captured during TTS (%.2fs), queuing",
+                                    duration,
+                                )
                             yield SegmentEvent(
                                 audio=segment_audio,
                                 duration_seconds=duration,
+                                background=is_muted,
                             )
                             speech_buffer = []
 

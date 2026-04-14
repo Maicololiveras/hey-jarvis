@@ -22,7 +22,7 @@ audio:
   channels: 1                      # Mono audio
   chunk_duration_ms: 80            # Audio chunk size in milliseconds
   device_override: null             # null = auto-detect; set index to force device
-  pre_gain: 5.0                    # Fixed mic gain boost before VAD / wake word
+  pre_gain: 3.0                    # Fixed mic gain boost before VAD / wake word
   highpass_cutoff_hz: 80          # High-pass filter cutoff to remove low rumble
   agc_target_peak: 0.9            # Automatic Gain Control target peak level
   agc_max_gain: 20.0              # AGC maximum gain multiplier

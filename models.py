@@ -23,6 +23,7 @@ class SegmentEvent:
 
     audio: np.ndarray
     duration_seconds: float
+    background: bool = False  # True when captured during TTS mute window
     timestamp: float = field(default_factory=time.time)
 
 
