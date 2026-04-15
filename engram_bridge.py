@@ -1,4 +1,5 @@
 """Engram memory bridge — context enrichment and session persistence."""
+
 from __future__ import annotations
 
 import logging
@@ -16,17 +17,35 @@ class EngramBridge:
         self._auto_save = config.get("auto_save_sessions", True)
         self._context_on_query = config.get("context_on_query", True)
         self._timeout = query_config.get("timeout_seconds", 60)
-        self._claude_cmd = query_config.get("backends", {}).get("claude-p", {}).get("command", "claude")
-        log.info("[EngramBridge] enabled=%s, auto_save=%s, context_on_query=%s",
-                 self._enabled, self._auto_save, self._context_on_query)
+        self._claude_cmd = (
+            query_config.get("backends", {})
+            .get("claude-p", {})
+            .get("command", "claude")
+        )
+        log.info(
+            "[EngramBridge] enabled=%s, auto_save=%s, context_on_query=%s",
+            self._enabled,
+            self._auto_save,
+            self._context_on_query,
+        )
 
-    def enrich_prompt(self, user_query: str, language: str = "es") -> str:
+    def enrich_prompt(
+        self,
+        user_query: str,
+        language: str = "es",
+        backend: str = "claude-p",
+    ) -> str:
         """Wrap user query with Engram context-search instructions.
 
         Returns the enriched prompt string. If engram is disabled,
         returns the original query unchanged.
         """
-        lang_name = "Spanish" if language == "es" else f"the detected language ({language})"
+        if backend != "claude-p":
+            return f"[{language}] {user_query}"
+
+        lang_name = (
+            "Spanish" if language == "es" else f"the detected language ({language})"
+        )
         lang_line = f"IMPORTANT: You MUST respond in {lang_name}.\n\n"
 
         if not self._enabled or not self._context_on_query:
@@ -92,7 +111,9 @@ class EngramBridge:
                 encoding="utf-8",
                 errors="replace",
             )
-            log.info("[EngramBridge] Session summary saved (%d exchanges)", len(exchanges))
+            log.info(
+                "[EngramBridge] Session summary saved (%d exchanges)", len(exchanges)
+            )
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             log.error("[EngramBridge] Failed to save session summary: %s", e)
 
