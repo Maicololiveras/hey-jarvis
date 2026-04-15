@@ -19,3 +19,4 @@ protobuf>=5.27
 grpcio-tools>=1.66
 rapidfuzz>=3.0
 av>=12.0
+fastmcp>=3.2
