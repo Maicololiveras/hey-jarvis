@@ -23,6 +23,14 @@ import numpy as np
 import sounddevice as sd
 
 try:
+    import torch
+
+    _TORCH_AVAILABLE = True
+except ImportError:
+    torch = None
+    _TORCH_AVAILABLE = False
+
+try:
     import noisereduce as nr
 
     _NOISEREDUCE_AVAILABLE = True
@@ -476,7 +484,6 @@ import queue
 import time
 from typing import Generator
 
-import torch
 from silero_vad import load_silero_vad, VADIterator
 
 try:
