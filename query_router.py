@@ -139,11 +139,6 @@ class QueryRouter:
 
         return f"{system_prompt}\n\n---\n\nUser: {user_text}"
 
-    def clear_history(self) -> None:
-        """Clear conversation history (e.g. on deactivation)."""
-        self._history.clear()
-        log.debug("[QueryRouter] Conversation history cleared")
-
     def add_exchange(self, user_text: str, assistant_text: str) -> None:
         """Manually append a user/assistant exchange to history."""
         self._record_history(user_text, assistant_text)
@@ -163,7 +158,8 @@ class QueryRouter:
 
     def clear_history(self) -> None:
         """Clear conversation history (called on deactivate)."""
-        self._history.clear()
+        with self._lock:
+            self._history.clear()
         log.info("[QueryRouter] Conversation history cleared")
 
     def query(self, user_text: str, backend: str | None = None) -> QueryResult:
