@@ -90,7 +90,7 @@ if HAS_PYQT6:
             timer_interval_ms = max(1, 1000 // fps)  # ~16ms for 60fps
 
             # --- UI state ----------------------------------------------
-            self._ui_state: str = "idle"
+            self._ui_state: str = "DORMIDO"
             self._state_time: float = time.time()
 
             # --- Waveform state ----------------------------------------
@@ -100,10 +100,20 @@ if HAS_PYQT6:
 
             # --- State color map ---------------------------------------
             self._state_colors = {
-                "idle": QColor("#00BFFF"),
-                "listening": QColor("#00BFFF"),
-                "processing": QColor("#00D4E8"),  # warmer cyan
-                "speaking": QColor("#00FFFF"),  # cyan-green
+                "DORMIDO": QColor("#00BFFF"),
+                "ACTIVO": QColor("#00BFFF"),
+                "ESCUCHANDO": QColor("#7FDBFF"),
+                "PROCESANDO": QColor("#00D4E8"),  # warmer cyan
+                "HABLANDO": QColor("#00FFFF"),  # cyan-green
+                "ERROR": QColor("#FF4D6D"),
+            }
+            self._legacy_state_aliases = {
+                "idle": "DORMIDO",
+                "active": "ACTIVO",
+                "listening": "ESCUCHANDO",
+                "processing": "PROCESANDO",
+                "speaking": "HABLANDO",
+                "error": "ERROR",
             }
 
             # --- Thread-safe command queue ------------------------------
@@ -198,9 +208,10 @@ if HAS_PYQT6:
         def set_state(self, state: str) -> None:
             """Change the UI animation state.
 
-            Valid states: 'idle', 'listening', 'processing', 'speaking'.
+            Valid states: canonical Jarvis states.
             """
-            valid = {"idle", "listening", "processing", "speaking"}
+            state = self._legacy_state_aliases.get(state, state)
+            valid = set(self._state_colors)
             if state not in valid:
                 log.warning("set_state: unknown state %r (valid: %s)", state, valid)
                 return
@@ -209,9 +220,19 @@ if HAS_PYQT6:
                 self._ui_state = state
                 self._state_time = time.time()
                 self._color_primary = self._state_colors.get(
-                    state, self._state_colors["idle"]
+                    state, self._state_colors["DORMIDO"]
                 )
                 self.update()
+
+        def _animation_mode(self) -> str:
+            """Map canonical Jarvis states onto the existing animation modes."""
+            if self._ui_state == "PROCESANDO":
+                return "processing"
+            if self._ui_state == "HABLANDO":
+                return "speaking"
+            if self._ui_state in {"ACTIVO", "ESCUCHANDO", "ERROR"}:
+                return "listening"
+            return "idle"
 
         # ---------------------------------------------------------------
         # Paint
@@ -266,7 +287,7 @@ if HAS_PYQT6:
 
             # --- Radial waveform lines (state-driven) ------------------
             has_audio = np.any(self._waveform_data > 0.01)
-            state = self._ui_state
+            state = self._animation_mode()
             elapsed = time.time() - self._state_time
 
             # Inner radius where lines start (just outside center glow)

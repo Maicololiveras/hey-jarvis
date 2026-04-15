@@ -56,6 +56,7 @@ class JarvisDaemon:
         # ── Module initialization ──────────────────────────────────────
         self.state = StateMachine(
             silence_timeout=jarvis_cfg.get("silence_timeout_seconds", 5.0),
+            on_state_change=self._on_state_change,
         )
         self.audio = AudioPipeline(
             config.get_audio_config(),
@@ -132,6 +133,30 @@ class JarvisDaemon:
         self._worker_thread.start()
 
         log.info("[JarvisDaemon] All modules initialized (pipeline worker started)")
+
+    def _on_state_change(self, old: State, new: State) -> None:
+        """Translate canonical Jarvis states into existing overlay commands."""
+        ui_state_map = {
+            State.DORMIDO: "idle",
+            State.ACTIVO: "active",
+            State.PROCESANDO: "processing",
+            State.HABLANDO: "speaking",
+            State.ERROR: "error",
+            State.ESCUCHANDO: "listening",
+        }
+
+        if new is State.DORMIDO:
+            self.ui.send_command(
+                UICommand("update_waveform", np.zeros(48, dtype=np.float32))
+            )
+            self.ui.send_command(UICommand("set_state", ui_state_map[new]))
+            self.ui.send_command(UICommand("hide"))
+            return
+
+        if old is State.DORMIDO:
+            self.ui.send_command(UICommand("show"))
+
+        self.ui.send_command(UICommand("set_state", ui_state_map[new]))
 
     def _ui_available_backends(self) -> list[str]:
         """Return UI-selectable backends in a stable user-facing order."""
@@ -274,6 +299,7 @@ class JarvisDaemon:
                     )
 
             except Exception:
+                self.state.enter_error()
                 log.exception(
                     "[Worker] Unhandled exception processing query (session=%s)",
                     self.state.session_id,
@@ -302,8 +328,11 @@ class JarvisDaemon:
 
         try:
             for event in self.audio.stream_events():
+                if self.state.check_error_timeout():
+                    self._enter_active_listening("error-recovery")
+
                 # ── Drain response queue (play ready responses) ───────
-                if self.state.is_activo:
+                if self.state.has_active_session and not self.state.is_error:
                     self._drain_response_queue()
 
                 # ── Silence timeout check (only while ACTIVO) ─────────
@@ -324,6 +353,9 @@ class JarvisDaemon:
                     self._feed_ui_waveform()
 
                 # ── Dispatch by event type ────────────────────────────
+                if self.state.is_error:
+                    continue
+
                 if isinstance(event, WakeEvent):
                     self._handle_wake(event)
                 elif isinstance(event, SegmentEvent):
@@ -355,7 +387,6 @@ class JarvisDaemon:
             event.score,
             self.state.session_id,
         )
-        self.ui.send_command(UICommand("show"))
         self._speak_with_ui_feedback("Si, te escucho", "es")
         self._enter_active_listening("wake-greeting")
 
@@ -366,14 +397,14 @@ class JarvisDaemon:
         so the worker thread handles STT + query processing while the
         main thread stays free for TTS playback and UI updates.
         """
-        if not self.state.is_activo:
+        if self.state.state not in {State.ACTIVO, State.ESCUCHANDO}:
             return
 
         self.state.record_audio_activity()
+        self.state.start_processing()
 
         # Send segment audio as waveform burst for visual feedback
         self.ui.send_command(UICommand("update_waveform", event.audio))
-        self.ui.send_command(UICommand("set_state", "processing"))
 
         label = "background" if event.background else "foreground"
         log.info(
@@ -481,7 +512,6 @@ class JarvisDaemon:
             self.state.session_id,
             reason,
         )
-        self.ui.send_command(UICommand("set_state", "listening"))
 
     # ------------------------------------------------------------------
     # UI waveform helpers
@@ -496,7 +526,7 @@ class JarvisDaemon:
           cannot tap the TTS audio output (ffplay / edge-tts).
         - **processing / idle**: the UI handles its own animation.
         """
-        if not self.state.is_activo:
+        if self.state.state not in {State.ACTIVO, State.HABLANDO}:
             return
 
         speaking = (
@@ -526,7 +556,7 @@ class JarvisDaemon:
     def _speak_with_ui_feedback(self, text: str, language: str | None) -> float:
         """Run blocking TTS on a worker thread while keeping UI animation alive."""
         session_id = self.state.session_id
-        self.ui.send_command(UICommand("set_state", "speaking"))
+        self.state.start_speaking()
         log.info(
             "[TTS] Starting playback (session=%s, language=%s): %s...",
             session_id,
@@ -560,6 +590,7 @@ class JarvisDaemon:
             session_id,
             result["duration"],
         )
+        self.state.finish_speaking()
 
         return result["duration"]
 
@@ -585,11 +616,6 @@ class JarvisDaemon:
         self.router.clear_history()
         self.state.deactivate()
         log.info("[JarvisDaemon] Session %s ended", session_id)
-        self.ui.send_command(
-            UICommand("update_waveform", np.zeros(48, dtype=np.float32))
-        )
-        self.ui.send_command(UICommand("set_state", "idle"))
-        self.ui.send_command(UICommand("hide"))
 
         # Persist session to Engram memory
         if self._exchanges:

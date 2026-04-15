@@ -6,6 +6,7 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+import re
 from threading import RLock
 from typing import Iterator
 
@@ -22,7 +23,7 @@ from jarvis.audio_pipeline import select_audio_device
 from jarvis.engram_bridge import EngramBridge
 from jarvis.logging_setup import LOG_FILE
 from jarvis.query_router import QueryRouter
-from jarvis.state_machine import StateMachine
+from jarvis.state_machine import State, StateMachine
 from jarvis.stt import STT
 
 
@@ -58,6 +59,9 @@ class JarvisMCPService:
     @contextmanager
     def _processing_scope(self) -> Iterator[None]:
         with self._lock:
+            self._state_machine.check_error_timeout()
+            if self._state_machine.is_error:
+                raise RuntimeError("Jarvis is recovering from an error")
             if self._processing == 0 and self._state_machine.is_dormido:
                 self._state_machine.activate()
             self._processing += 1
@@ -67,7 +71,11 @@ class JarvisMCPService:
         finally:
             with self._lock:
                 self._processing = max(0, self._processing - 1)
-                if self._processing == 0 and self._state_machine.is_activo:
+                if (
+                    self._processing == 0
+                    and self._state_machine.has_active_session
+                    and not self._state_machine.is_error
+                ):
                     self._state_machine.deactivate()
 
     def _detect_prompt_language(self, prompt: str) -> str:
@@ -106,25 +114,22 @@ class JarvisMCPService:
         except OSError:
             return None
 
+        state_pattern = re.compile(r"State: [A-Z]+ -> ([A-Z]+)")
         for line in reversed(lines[-400:]):
-            if "UI state:" in line:
-                if "-> processing" in line:
-                    return "PROCESANDO"
-                if "-> listening" in line or "-> speaking" in line:
-                    return "ACTIVO"
-                if "-> idle" in line:
-                    return "DORMIDO"
-            if "State: DORMIDO -> ACTIVO" in line:
-                return "ACTIVO"
-            if "State: ACTIVO -> DORMIDO" in line:
-                return "DORMIDO"
+            match = state_pattern.search(line)
+            if match:
+                return match.group(1)
 
         return None
 
     def status(self) -> dict[str, str]:
+        self._state_machine.check_error_timeout()
         with self._lock:
             if self._processing > 0:
-                return {"state": "PROCESANDO", "source": "mcp-wrapper"}
+                return {
+                    "state": self._state_machine.state.value,
+                    "source": "mcp-wrapper",
+                }
 
         logged = self._status_from_log()
         if logged is not None:
@@ -136,28 +141,59 @@ class JarvisMCPService:
         }
 
     def speak(self, text: str, language: str = "es") -> dict[str, object]:
-        duration = tts.speak(text, language)
-        return {
-            "ok": True,
-            "text": text,
-            "language": language,
-            "estimated_duration_seconds": duration,
-        }
+        with self._lock:
+            self._state_machine.check_error_timeout()
+            if self._state_machine.is_error:
+                raise RuntimeError("Jarvis is recovering from an error")
+            should_deactivate = False
+            if self._state_machine.is_dormido:
+                self._state_machine.activate()
+                should_deactivate = True
+            self._state_machine.start_speaking()
+
+        try:
+            duration = tts.speak(text, language)
+            return {
+                "ok": True,
+                "text": text,
+                "language": language,
+                "estimated_duration_seconds": duration,
+            }
+        except Exception:
+            self._state_machine.enter_error()
+            raise
+        finally:
+            with self._lock:
+                if self._state_machine.state is State.HABLANDO:
+                    self._state_machine.finish_speaking()
+                if (
+                    should_deactivate
+                    and self._state_machine.has_active_session
+                    and not self._state_machine.is_error
+                ):
+                    self._state_machine.deactivate()
 
     def query(self, prompt: str, backend: str = "auto") -> dict[str, object]:
         selected_backend = None if backend == "auto" else backend
         language = self._detect_prompt_language(prompt)
 
         with self._processing_scope():
-            if selected_backend is None:
-                enriched_prompt = self._engram.enrich_prompt(prompt, language=language)
-            else:
-                enriched_prompt = self._engram.enrich_prompt(
-                    prompt,
-                    language=language,
-                    backend=selected_backend,
-                )
-            result = self._router.query(enriched_prompt, backend=selected_backend)
+            self._state_machine.start_processing()
+            try:
+                if selected_backend is None:
+                    enriched_prompt = self._engram.enrich_prompt(
+                        prompt, language=language
+                    )
+                else:
+                    enriched_prompt = self._engram.enrich_prompt(
+                        prompt,
+                        language=language,
+                        backend=selected_backend,
+                    )
+                result = self._router.query(enriched_prompt, backend=selected_backend)
+            except Exception:
+                self._state_machine.enter_error()
+                raise
 
         return {
             "ok": result.ok,
@@ -181,21 +217,30 @@ class JarvisMCPService:
         frame_count = int(sample_rate * duration_seconds)
 
         with self._processing_scope():
-            audio = sd.rec(
-                frame_count,
-                samplerate=sample_rate,
-                channels=channels,
-                dtype="float32",
-                device=device_index,
-            )
-            sd.wait()
+            self._state_machine.start_listening()
+            try:
+                audio = sd.rec(
+                    frame_count,
+                    samplerate=sample_rate,
+                    channels=channels,
+                    dtype="float32",
+                    device=device_index,
+                )
+                sd.wait()
 
-            if channels > 1:
-                mono_audio = np.mean(audio, axis=1, dtype=np.float32)
-            else:
-                mono_audio = audio.reshape(-1).astype(np.float32)
+                if channels > 1:
+                    mono_audio = np.mean(audio, axis=1, dtype=np.float32)
+                else:
+                    mono_audio = audio.reshape(-1).astype(np.float32)
 
-            text, language = self._stt.transcribe(mono_audio, strict=False, fast=False)
+                text, language = self._stt.transcribe(
+                    mono_audio, strict=False, fast=False
+                )
+                if text and text.strip():
+                    self._state_machine.receive_text()
+            except Exception:
+                self._state_machine.enter_error()
+                raise
 
         return {
             "ok": True,
